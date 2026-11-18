@@ -13,3 +13,6 @@ dist/
 .workbuddy/
 .claude/
 .codebuddy/
+
+# 本地推送辅助脚本
+推送到GitHub.bat
