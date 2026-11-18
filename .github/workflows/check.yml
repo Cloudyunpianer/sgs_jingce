@@ -1,0 +1,49 @@
+name: 自检
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: node tools/check.js (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 项目零依赖，不需要 npm install
+      - name: 跑断言
+        run: node tools/check.js
+
+  syntax:
+    name: 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: node --check 所有 js
+        run: |
+          for f in js/*.js tools/*.js; do
+            node --check "$f" || exit 1
+          done
+
+      - name: 检查 index.html 引用的脚本是否都存在
+        run: |
+          grep -o 'src="[^"]*\.js"' index.html | sed 's/src="//;s/"//' | while read -r p; do
+            [ -f "$p" ] || { echo "缺少文件: $p"; exit 1; }
+          done
+          echo "脚本引用完整"

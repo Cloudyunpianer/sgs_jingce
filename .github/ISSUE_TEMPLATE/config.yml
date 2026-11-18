@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 先看常见问题
+    url: https://github.com/Cloudyunpianer/sgs_jingce/blob/main/docs/faq.md
+    about: 口径差异、券后偏乐观、单买价这些问题的解释都在这儿，说不定已经答了
+  - name: 口径与算法
+    url: https://github.com/Cloudyunpianer/sgs_jingce/blob/main/docs/methodology.md
+    about: 每个数字是怎么算出来的，报错数之前建议先对一遍

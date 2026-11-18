@@ -1,0 +1,72 @@
+name: 错数报告
+description: 某个目标算出来和预期对不上
+title: "[错数] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        报错数前请先看右栏最底下的**核对表**（需要 / 期初 / 白送 / 档位返 / 要买 / 合计）——
+        那是硬账，比顶部的「需要充值」更准。很多「算错了」其实是两者的口径差异。
+
+  - type: input
+    id: target
+    attributes:
+      label: 哪个目标
+      placeholder: 例如 威曹彰 / 春宵彩翼*任婉
+    validations:
+      required: true
+
+  - type: input
+    id: got
+    attributes:
+      label: 工具给的数
+      placeholder: 例如 需要充值 ¥768，券前 191,110 元宝
+    validations:
+      required: true
+
+  - type: input
+    id: expect
+    attributes:
+      label: 你认为应该是多少
+      placeholder: 例如 应该是 ¥968，因为 25 玉不是 20 玉
+    validations:
+      required: true
+
+  - type: textarea
+    id: proof
+    attributes:
+      label: 依据
+      description: |
+        公告原文（贴文字或截图）、自己手算的过程、或者别人攻略里的数。
+        有出处最快能定位。
+      placeholder: |
+        公告第 X 段：「累计开 50 盒必得 1 传世宝玉，限 20 次」
+        我手算：20 玉 = 1000 盒 × 200 元宝 = 200,000 元宝
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 你的设置
+      description: 期初存货填了什么、活动天数改了吗、有没有手动锁定路线
+      placeholder: |
+        活动天数 9
+        期初存货：玉 5 / 灯 0 / 令 0 / 券 0
+        没锁路线
+    validations:
+      required: false
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: 浏览器
+      options:
+        - Edge
+        - Chrome
+        - Firefox
+        - Safari
+        - 其他
+    validations:
+      required: false

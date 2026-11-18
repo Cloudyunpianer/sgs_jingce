@@ -1,0 +1,41 @@
+name: 功能建议
+description: 想要新功能，或者觉得哪里用着别扭
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 你想要什么
+      placeholder: 一句话说清想加的能力，或者想改的交互
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: 什么场景下需要
+      description: 描述你实际遇到的问题，比描述解决方案有用
+      placeholder: |
+        每次换期我都要手填三张表，很容易漏。
+        希望能把上一期的数据存下来对比。
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: 你设想的做法（可选）
+      placeholder: 比如「在左栏加一个下拉，可以在两期数据之间切换」
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 请确认
+      options:
+        - label: 这个建议不需要引入 npm 依赖或构建步骤（项目卖点是双击 index.html 能跑）
+          required: true
+        - label: 我理解这是个个人自用的小工具，不一定会实现
+          required: true
