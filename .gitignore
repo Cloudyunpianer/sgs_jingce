@@ -1,0 +1,15 @@
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# 依赖与构建产物（本项目零依赖，留着以防以后加）
+node_modules/
+dist/
+*.log
+
+# AI 助手的本地记忆与自动化记录，不对外
+.workbuddy/
+.claude/
+.codebuddy/

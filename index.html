@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>三国杀 · 本期精测台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- 顶部 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">测</div>
+      <div class="brand-txt">
+        <h1>本期精测台</h1>
+        <p id="eventMeta">—</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="btnRate">充值倍率表</button>
+      <button class="btn ghost" id="btnMin">最低消费反查</button>
+      <button class="btn ghost" id="btnDay">每日方案表</button>
+      <button class="btn ghost" id="btnAll">全部精测表</button>
+      <button class="btn ghost" id="btnImport">导入本期 md</button>
+      <button class="btn" id="btnRecalc">重新计算</button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <!-- 左栏：参数 -->
+    <aside class="sidebar">
+      <section class="panel">
+        <h2>活动参数</h2>
+        <div class="field">
+          <label>活动天数</label>
+          <input type="number" id="pDays" min="1" max="30" value="9">
+          <span class="unit">天</span>
+        </div>
+        <div class="field">
+          <label>元宝 → 元</label>
+          <input type="number" id="pRatio" min="1" step="1" value="100">
+          <span class="unit">元宝/元</span>
+        </div>
+        <div class="field">
+          <label>祈福每灯结数</label>
+          <input type="number" id="pKnot" value="1" readonly>
+          <span class="unit">结/灯</span>
+        </div>
+        <p class="hint">固定 <b>1 灯 = 1 结</b>，不再按均值估算：要 200 结就攒 200 灯。累计积分档位送的结是额外收益，不拿来抵扣灯数。</p>
+      </section>
+
+      <section class="panel">
+        <h2>期初存货</h2>
+        <div class="mini">
+          <label>元宝<input type="number" id="sYb" value="0" min="0" step="1000"></label>
+        </div>
+        <div class="mini-cap">中间道具 · 直接抵需求</div>
+        <div class="mini g3">
+          <label title="传世宝玉（1 玉 = 50 盒）">宝玉<input type="number" id="sJade" value="0" min="0" step="1"></label>
+          <label>祈福灯<input type="number" id="sLamp" value="0" min="0" step="1"></label>
+          <label>纳贤令<input type="number" id="sNana" value="0" min="0" step="1"></label>
+        </div>
+        <div class="mini-cap">抵价券 · 一次购买用一张</div>
+        <div class="mini g3">
+          <label title="抵价券 3000-1111">1111<input type="number" id="sC1" value="0" min="0"></label>
+          <label title="抵价券 3000-2888">2888<input type="number" id="sC2" value="0" min="0"></label>
+          <label title="抵价券 6666-6665">6665<input type="number" id="sC3" value="0" min="0"></label>
+        </div>
+        <p class="hint">手上已有的元宝、宝玉、灯、令和抵价券，会先从总需求里扣掉（1 玉按 50 盒折，存量玉不产生开盒返玉）。</p>
+      </section>
+
+      <section class="panel">
+        <h2>固定规则</h2>
+        <ul class="legend">
+          <li>宝玉：每开 <b>50 盒</b> 返 <b>1 玉</b></li>
+          <li>纳贤：<b>100 / 120 令</b> 达标即领</li>
+          <li>祈福：<b>1 灯 = 1 结</b>（固定）</li>
+          <li>每日消费：<b>1111 / 3888 / 8888 / 18888 / 28888 / 38888 / 58888</b></li>
+          <li>充值：1 元 = 100 元宝，档位送灯、送券、双倍箱</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>口径</h2>
+        <ul class="legend">
+          <li><b>先算道具，再排到每天</b></li>
+          <li>卡片上的元宝是<b>券前</b>中间道具成本</li>
+          <li>每日消费档位返的令／券会回冲需求</li>
+          <li>抵价券按面额直接减，一次只能用一张</li>
+          <li>充值 1 元 = 100 元宝，双倍箱按 2 倍算</li>
+          <li>概率直出不进方案，只列参考</li>
+        </ul>
+      </section>
+
+    </aside>
+
+    <!-- 中栏：目标 -->
+    <main class="main">
+      <div class="toolbar">
+        <input type="search" id="search" placeholder="搜索武将 / 皮肤，例如 威曹彰、任婉、孙綝">
+        <div class="chips" id="cats"></div>
+        <div class="chips ways" id="ways"></div>
+      </div>
+      <div class="selected-bar" id="selectedBar"></div>
+      <div class="grid" id="grid"></div>
+    </main>
+
+    <!-- 右栏：每日方案 -->
+    <aside class="result">
+      <div class="result-head">
+        <div>
+          <h2>每日方案</h2>
+          <p id="planSub">选择目标后自动生成</p>
+        </div>
+        <button class="btn ghost sm" id="btnCopy">复制</button>
+      </div>
+      <div class="totals" id="totals"></div>
+      <div class="split" id="splitBox"></div>
+      <div class="result-body">
+        <div class="day-list" id="dayList"></div>
+        <div class="output" id="outputBox"></div>
+        <div class="audit" id="auditBox"></div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- 每日方案表 -->
+<div class="modal" id="dayModal">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h2 id="dayTitle">每日消费方案</h2>
+      <button class="btn ghost sm" id="closeDay">关闭</button>
+    </div>
+    <div class="modal-body" id="dayBody"></div>
+  </div>
+</div>
+
+<!-- 全部精测表 -->
+<div class="modal" id="allModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>本期全部目标精测表</h2>
+      <button class="btn ghost sm" id="closeAll">关闭</button>
+    </div>
+    <div class="modal-body" id="allBody"></div>
+  </div>
+</div>
+
+<!-- 路线对比 -->
+<div class="modal" id="routeModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="routeTitle">路线对比</h2>
+      <button class="btn ghost sm" id="closeRoute">关闭</button>
+    </div>
+    <div class="modal-body" id="routeBody"></div>
+  </div>
+</div>
+
+<!-- 导入 -->
+<div class="modal" id="importModal">
+  <div class="modal-box narrow">
+    <div class="modal-head">
+      <h2>导入本期公告 md</h2>
+      <button class="btn ghost sm" id="closeImport">关闭</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint">支持官网公告导出的 md 文件。解析后会在下方列出识别到的系统，确认后覆盖当前数据。</p>
+      <input type="file" id="fileInput" accept=".md,.txt,.markdown">
+      <textarea id="mdPaste" placeholder="或者把公告内容直接粘贴到这里……"></textarea>
+      <div class="row">
+        <button class="btn" id="btnParse">解析并预览</button>
+        <button class="btn ghost" id="btnApply" disabled>应用到本期</button>
+      </div>
+      <div id="parseReport" class="parse-report"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 充值倍率表 -->
+<div class="modal" id="rateModal">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h2>充值倍率表 · 哪个档位最值</h2>
+      <button class="btn ghost sm" id="closeRate">关闭</button>
+    </div>
+    <div class="modal-body" id="rateBody"></div>
+  </div>
+</div>
+
+<!-- 最低消费反查 -->
+<div class="modal" id="minModal">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h2>最低消费反查 · 想要它就最少花多少</h2>
+      <button class="btn ghost sm" id="closeMin">关闭</button>
+    </div>
+    <div class="modal-body" id="minBody">
+      <div class="min-form">
+        <label style="font-size:11.5px;color:var(--ink-2)">想要</label>
+        <select id="minItem"></select>
+        <input type="number" id="minQty" value="1" min="1" step="1">
+        <button class="btn" id="btnMinGo">反查最低消费</button>
+        <span class="hintline">枚举「充值组合 × 每日消费档位分布」，只算确定规则（保底 / 累计 / 商店标价），不算概率期望。数量 &gt;1 按重复购买近似，商店限购 1 件的目标请填 1。</span>
+      </div>
+      <div class="min-res" id="minResults"></div>
+    </div>
+  </div>
+</div>
+
+<script src="js/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/plan.js"></script>
+<script src="js/classify.js"></script>
+<script src="js/rates.js"></script>
+<script src="js/mincost.js"></script>
+<script src="js/parser.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
