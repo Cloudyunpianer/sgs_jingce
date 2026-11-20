@@ -129,6 +129,9 @@ window.SCHED = (function () {
 
   /* ---------------- 三、单品最优购买（DP，限购生效） ---------------- */
   function solveItem(key, need, packs, days) {
+    /* 外层阻尼迭代会把需求传成小数（假设返利是个中间值），
+       这里必须取整：DP 的容量维度只能是整数。 */
+    need = Math.ceil(need - 1e-9);
     if (need <= 0) return { counts: [], cost: 0 };
     const opts = packs
       .filter((p) => p.gives[key] > 0 && Object.keys(p.gives).filter((k) => KEYS.includes(k)).length === 1)
@@ -202,7 +205,12 @@ window.SCHED = (function () {
   }
 
   /* ---------------- 五、摊到每天 ---------------- */
-  function distribute(instances, days, active) {
+  /* budget > 0 时走「逐日预算装箱」：每天尽量卡到预算（= 某个当日档位门槛），
+     而不是先算总量、再一股脑堆到花钱最少的那一天。
+     差别不是排版好看，是钱：每日消费档、每日充值档都是「每日重置」，
+     堆在一天只能吃一次。11.16 期「花 1 万送 400 夺宝券」堆一天吃 1 份，
+     摊成 2 天就是 2 份（截图那套 132 打法正是这么打的）。 */
+  function distribute(instances, days, active, budget) {
     const d = [];
     for (let i = 0; i < days; i++) d.push({ i, spend: 0, net: 0, packs: [], used: {} });
     const act = active && active.length ? active : d.map((x) => x.i);
@@ -216,6 +224,7 @@ window.SCHED = (function () {
     const perDay = instances.filter((x) => x.perDay > 0);
     const bulk = instances.filter((x) => !(x.perDay > 0));
 
+    /* perDay 商品天生就该分散：每天各来一份 */
     perDay.sort((a, b) => b.price - a.price).forEach((ins) => {
       const ok = d.filter((x) => act.includes(x.i) && (x.used[ins.id] || 0) < ins.perDay);
       const pool = ok.length ? ok : d.filter((x) => (x.used[ins.id] || 0) < ins.perDay);
@@ -224,11 +233,29 @@ window.SCHED = (function () {
       push(pool[0], ins);
     });
 
+    if (!(budget > 0)) {
+      /* 无预算：沿用「铺到当前最空的一天」，等价于尽量平摊 */
+      bulk.sort((a, b) => b.price - a.price).forEach((ins) => {
+        const pool = d.filter((x) => act.includes(x.i));
+        const use = pool.length ? pool : d;
+        use.sort((a, b) => a.spend - b.spend);
+        push(use[0], ins);
+      });
+      return d;
+    }
+
+    /* 有预算：best-fit —— 放进「塞得下且塞得最满」的那天，把每天顶到门槛附近。
+       全都塞不下（单件就超预算）时退到最空的一天，不让它无处可去。 */
+    const target = act.map((i) => d[i]);
     bulk.sort((a, b) => b.price - a.price).forEach((ins) => {
-      const pool = d.filter((x) => act.includes(x.i));
-      const use = pool.length ? pool : d;
-      use.sort((a, b) => a.spend - b.spend);
-      push(use[0], ins);
+      let best = null;
+      target.forEach((day) => {
+        if (day.spend + ins.price <= budget + 1e-6) {
+          if (!best || day.spend > best.spend) best = day;
+        }
+      });
+      if (!best) best = target.slice().sort((a, b) => a.spend - b.spend)[0];
+      push(best, ins);
     });
 
     return d;
@@ -302,7 +329,9 @@ window.SCHED = (function () {
   }
 
   /* 补档：当天离下一档只差一点，用一件“值回票价”的礼包顶上。
-     抵价券只有在「确实有满额商品能用掉」时才算价值，避免为了券白花钱。 */
+     抵价券不算价值（否则会为了券白花钱）。夺宝券也不按单价算：
+     它的兑换额度是「每池一次首档」的硬上限，线性估会高估十几倍，
+     结果变成为了凑档狂买券，实测反而更贵。 */
   function topUp(dist, packs, unitPrice, demand) {
     const totalUsed = (id) => dist.reduce((a, d) => a + d.packs.filter((x) => x.id === id).length, 0);
 
@@ -314,7 +343,6 @@ window.SCHED = (function () {
         if (!next) continue;
         const gap = next.need - net;
         if (gap > 6888) continue;
-        /* 只按「真正需要的道具」估值，抵价券不算进来（否则会为了券白花钱） */
         let gain = 0;
         Object.keys(next.gives).forEach((k) => {
           if (!demand.has(k)) return;
@@ -491,7 +519,11 @@ window.SCHED = (function () {
       const chs = [];
       tabs.forEach((t) => {
         const rt = pickRoute(t, demand, U2);
-        const y = rt.y / 100;
+        /* DP 的容量维度是「百元宝」，必须是整数。
+           5888 元宝的档算出来是 58.88，直接当下标用会变成数组外属性，
+           整档静默失效（11.16 期「每日充值 5888 送 10 令」因此一次都没被选中）。
+           四舍五入后重建时仍按 rt.y 的真实值累加，不会虚报到账。 */
+        const y = Math.max(1, Math.round(rt.y / 100));
         const nd = dp.slice();
         const ch = new Array(maxU + 1).fill(0);
         for (let v = 0; v <= maxU; v++) {
@@ -567,10 +599,74 @@ window.SCHED = (function () {
         Object.keys(x.t.gives || {}).forEach((k) => { gives[k] = (gives[k] || 0) + x.t.gives[k] * x.n; });
       }
     });
+
+    /* 每日累计充值档：门槛看「当天充值总额」，和单笔档叠加。
+       截图的 132 打法就靠这条：充 60+12 元那天，6000 档给 6 令、
+       5888 门槛再给 10 令，一天 16 个令，比单买便宜一半以上。 */
+    const dcTiers = P.dailyCumCharge || [];
+    if (dcTiers.length) {
+      const perDayYb = {};
+      merged.forEach((x) => {
+        const y = x.t.need + (x.alt && x.t.alt ? (x.t.alt['绑定元宝'] || 0) : 0);
+        (x.days || []).forEach((d) => { perDayYb[d] = (perDayYb[d] || 0) + y; });
+      });
+      Object.keys(perDayYb).forEach((d) => {
+        dcTiers.forEach((t) => {
+          if (perDayYb[d] + 1e-6 < t.need) return;
+          Object.keys(t.gives || {}).forEach((k) => { gives[k] = (gives[k] || 0) + t.gives[k]; });
+        });
+      });
+    }
+
     return { picks: merged, money, yb: gotYb, gives };
   }
 
   /* ---------------- 七、总方案 ---------------- */
+
+  /* 夺宝券 → 目标品类。
+     夺宝券是「活动顺带返的中间产物」：不打夺宝就彻底沉没，
+     以前 next[k] = min(档位返, 目标需求) 里目标不需求券，等于把整期返的券直接扔掉
+     （11.16 期星曹仁：日消费档返 425 张券，一张没用上）。
+     转盘各自独立计进度，一个池只能领一次首档；同一池内高档次产出的都是宝箱/皮肤，
+     折算不了价格，所以只认「第一个能换到目标品类」的档位。 */
+  function duobaoRedeem(qty, want) {
+    const got = {};
+    let used = 0;
+    if (!(qty > 0)) return { got, used, detail: [] };
+    const U = priceTable();
+    const cands = [];
+    (P.systems || []).forEach((s) => {
+      if (s.pool !== 'duobao' || !s.progress || !s.progress.length) return;
+      let best = null;
+      s.progress.forEach((x) => {
+        if (!x.tickets || !x.gives) return;
+        let val = 0;
+        Object.keys(x.gives).forEach((k) => {
+          /* 券换券没有意义，别把夺宝券本身当目标 */
+          if (k === '狂欢夺宝券' || !KEYS.includes(k) || !want.has(k)) return;
+          val += (x.gives[k] || 0) * (U[k] || 0);
+        });
+        if (val <= 0) return;
+        const eff = val / x.tickets;
+        if (!best || eff > best.eff + 1e-9) best = { x, eff, val };
+      });
+      if (best) cands.push({ s, t: best.x, eff: best.eff });
+    });
+    /* 先打「每张券换回价值最高」的池；券不够整档就不打，不做半档 */
+    cands.sort((a, b) => b.eff - a.eff);
+    const detail = [];
+    cands.forEach((c) => {
+      if (used + c.t.tickets > qty + 1e-6) return;
+      used += c.t.tickets;
+      Object.keys(c.t.gives).forEach((k) => {
+        if (!KEYS.includes(k) || k === '狂欢夺宝券') return;
+        got[k] = (got[k] || 0) + c.t.gives[k];
+      });
+      detail.push({ pool: c.s.name, plays: c.t.n, coupons: c.t.tickets, gives: c.t.gives });
+    });
+    return { got, used, detail };
+  }
+
   /* chargePool：上一轮迭代「充值实际返到的中间产物」（券 + 道具）。
      券进券池压当日实付，道具直接回冲需求 —— 两者都必须进下一轮的算式，
      否则就是「充值送的令只写在账本上，方案照样买满」，报价必然偏高。 */
@@ -596,12 +692,16 @@ window.SCHED = (function () {
     const stockCoupons = Object.assign({ 券1111: 0, 券2888: 0, 券6665: 0 }, opts.stock.coupons || {});
 
     /* 充值返到的东西拆两路：券 → 券池；道具 → 回冲需求。
-       同一 key 只走一路，避免「既当券抵扣、又当道具少买」的双算。 */
+       同一 key 只走一路，避免「既当券抵扣、又当道具少买」的双算。
+       外层阻尼迭代会传出小数（30.98 个令），这里向下取整：
+       假设量必须 ≤ 实际量，多算 0.98 个令就会让核对表凑数。 */
     const backCoupons = {};
     const backItems = {};
     Object.keys(chargePool || {}).forEach((k) => {
-      if (P.coupons && P.coupons[k]) backCoupons[k] = chargePool[k];
-      else if (KEYS.includes(k)) backItems[k] = chargePool[k];
+      const q = Math.floor((chargePool[k] || 0) + 1e-9);
+      if (q <= 0) return;
+      if (P.coupons && P.coupons[k]) backCoupons[k] = q;
+      else if (KEYS.includes(k)) backItems[k] = q;
     });
     cpnKeys().forEach((k) => { stockCoupons[k] = (stockCoupons[k] || 0) + (backCoupons[k] || 0); });
 
@@ -621,13 +721,17 @@ window.SCHED = (function () {
        否则会拿着上一轮的返利去抵这一轮的购买量，方案最后缺几件。 */
     const rounds = [];
 
+    /* 充值返到、又还没换成目标品类的夺宝券：单独收着，最后统一打夺宝。
+       它不能像灯/令那样直接扣需求（目标不需求券），只能走兑换。 */
+    const dbCouponStock = backItems['狂欢夺宝券'] || 0;
+
     for (let round = 0; round < 6; round++) {
       const need = {};
       KEYS.concat(['直购']).forEach((k) => {
         /* 三层回冲，按「确定性」从高到低扣：存货 → 白送 → 档位返 → 充值返。
            充值返最后扣，因为它的量依赖本轮算出的消费额，只有迭代才收敛。 */
         need[k] = Math.max(0, (need0[k] || 0) - (free[k] || 0) - (reward[k] || 0)
-          - stockOf(k) - (backItems[k] || 0));
+          - stockOf(k) - (k === '狂欢夺宝券' ? 0 : (backItems[k] || 0)));
       });
 
       const comboBought = comboSweep(need, packs, unitPrice, heroSet);
@@ -647,41 +751,99 @@ window.SCHED = (function () {
       const demandSet = new Set(KEYS.filter((k) => (need0[k] || 0) > 0));
       const couponPool = Object.assign({}, stockCoupons);
 
+      /* 每日预算候选：
+         ① 0 —— 不卡天，沿用旧口径；
+         ② 当期各档位门槛 —— 金额不大时，摊开后每天刚好跨档；
+         ③ 总额 ÷ 活跃天数 向上取最近档位 —— 金额大时（秋日 12.8 万 / 5 天）
+            没有这一项，1 万的预算根本装不下，best-fit 会把货全怼到最后一天，
+            逐日预算就成了摆设。 */
+      const sumPrice = instances.reduce((a, x) => a + x.price, 0);
+      /* 用户明确指定了每天花多少，就不再掺「自动」的候选——
+         否则它总会被算成更便宜的堆叠解吃掉，等于没指定。 */
+      const buds = [];
+      if (opts.budget > 0) buds.push(opts.budget);
+      else {
+        buds.push(0);
+        const tiers = (P.dailyTiers || []).map((t) => t.need).filter((n) => n > 0).sort((a, b) => a - b);
+        tiers.forEach((n) => { if (buds.indexOf(n) < 0) buds.push(n); });
+        for (let a = 1; a <= opts.days; a++) {
+          const per = sumPrice / a;
+          const th = tiers.find((n) => n >= per);
+          if (th && buds.indexOf(th) < 0) buds.push(th);
+        }
+      }
+      const wantK = KEYS.filter((k) => (need0[k] || 0) > 0);
+      const wantSet = new Set(wantK);
+      /* 档位返利的折算价值：只算这单真用得上的品类。
+         夺宝券必须按「实际能换回多少」折，不能按每券单价乘总量：
+         券的产出是阶梯的，每池只能领一次首档，200 券换 5 令、
+         再多 1700 券也只多换 5 令，按单价乘会高估五倍，
+         于是评分偏向「券多」的方案，钱反而多花。 */
+      const rwVal = (rw) => {
+        let v = wantK.reduce((a, k) => a + (rw[k] || 0) * (unitPrice[k] || 0), 0);
+        const db = duobaoRedeem(rw['狂欢夺宝券'] || 0, wantSet);
+        Object.keys(db.got).forEach((k) => { v += db.got[k] * (unitPrice[k] || 0); });
+        return v;
+      };
+
       let pick = null;
       for (let act = 1; act <= opts.days; act++) {
         if (opts.forceAct && act !== Math.min(opts.forceAct, opts.days)) continue;
         const active = [];
         for (let i = opts.days - act; i < opts.days; i++) active.push(i);
-        const dist = distribute(instances.map((x) => Object.assign({}, x)), opts.days, active);
-        if (directYb > 0) {
-          const used = dist.filter((d) => d.spend > 0);
-          const tgt = (used.length ? used : dist).slice().sort((a, b) => a.spend - b.spend)[0];
-          tgt.spend += directYb;
-          tgt.packs.push({ id: '__direct', name: '直购', price: directYb, direct: true });
-        }
-        topUp(dist, packs, unitPrice, demandSet);
-        const applied = settle(dist, couponPool);
-        const rw = tierSum(dist);
-        const net = dist.reduce((a, d) => a + d.net, 0);
-        if (!pick || net < pick.net - 1e-6) {
-          pick = { act, dist, applied, rw, net };
+        for (let bi = 0; bi < buds.length; bi++) {
+          const bud = buds[bi];
+          const dist = distribute(instances.map((x) => Object.assign({}, x)), opts.days, active, bud);
+          if (directYb > 0) {
+            const used = dist.filter((d) => d.spend > 0);
+            const tgt = (used.length ? used : dist).slice().sort((a, b) => a.spend - b.spend)[0];
+            tgt.spend += directYb;
+            tgt.packs.push({ id: '__direct', name: '直购', price: directYb, direct: true });
+          }
+          topUp(dist, packs, unitPrice, demandSet);
+          const applied = settle(dist, couponPool);
+          const rw = tierSum(dist);
+          const net = dist.reduce((a, d) => a + d.net, 0);
+          /* 不能只看净消费：摊到多天会多吃几份每日档，花得少不一定拿得多。
+             按「净消费 − 档位返利折算」评，才不会为了省几百元宝丢掉整档奖励。 */
+          const score = net - rwVal(rw);
+          if (!pick || score < pick.score - 1e-6) {
+            pick = { act, dist, applied, rw, net, budget: bud, score };
+          }
         }
       }
 
       best = {
         need0, free, need, comboBought, itemResult,
-        dist: pick.dist, act: pick.act, tierReward: pick.rw,
+        dist: pick.dist, act: pick.act, tierReward: pick.rw, budget: pick.budget,
         spend: pick.dist.reduce((a, d) => a + d.spend, 0),
         netSpend: pick.net,
         couponSave: pick.applied.save, coupons: pick.applied.used,
         directYb, unitPrice, info,
       };
 
+      /* 档位返到的夺宝券（充值返的那部分另算 dbCouponStock）→ 打夺宝换成目标品类。
+         换出来的令同样回冲需求，否则券就是白返。 */
+      const dbPool = (pick.rw['狂欢夺宝券'] || 0) + dbCouponStock;
+      const dbR = duobaoRedeem(dbPool, new Set(KEYS.filter((k) => (need0[k] || 0) > 0)));
+      best.tierReward = Object.assign({}, pick.rw);
+      /* 打夺宝花掉的券要从「档位返利」里扣，否则账本上券凭空多出来 */
+      if (dbR.used > 0) {
+        best.tierReward['狂欢夺宝券'] = Math.max(0, (best.tierReward['狂欢夺宝券'] || 0) - dbR.used);
+      }
+      best.duobao = { got: dbR.got, used: dbR.used, detail: dbR.detail, pool: dbPool };
+
       const next = {};
       KEYS.forEach((k) => {
-        next[k] = Math.min(pick.rw[k] || 0, Math.max(0, (need0[k] || 0) - (free[k] || 0)));
+        let v = Math.min(pick.rw[k] || 0, Math.max(0, (need0[k] || 0) - (free[k] || 0)));
+        if (k === '狂欢夺宝券') v = 0;
+        else if (dbR.got[k]) v = Math.min(v + dbR.got[k], Math.max(0, (need0[k] || 0) - (free[k] || 0)));
+        next[k] = v;
       });
-      rounds.push({ r: best, used: Object.assign({}, reward), rw: Object.assign({}, pick.rw) });
+      rounds.push({
+        r: best, used: Object.assign({}, reward), rw: Object.assign({}, pick.rw),
+        dbUsed: dbR.used, dbAvail: dbPool,
+      });
       const same = KEYS.every((k) => Math.abs((reward[k] || 0) - (next[k] || 0)) < 1e-6);
       reward = next;
       if (same) break;
@@ -690,7 +852,8 @@ window.SCHED = (function () {
     /* 只在「这一轮假设的档位返利，这一轮真的返到了」的候选里挑最便宜的。
        全都不自洽（震荡）时退回全部候选，让 shortItems 把这个缺口暴露出来。
        比较用净消费而不是 money：money 要等 chargePlan 才算得出来。 */
-    const sound = rounds.filter((c) => KEYS.every((k) => (c.used[k] || 0) <= (c.rw[k] || 0) + 1e-6));
+    const sound = rounds.filter((c) => KEYS.every((k) => (c.used[k] || 0) <= (c.rw[k] || 0) + 1e-6)
+      && (c.dbUsed || 0) <= (c.dbAvail || 0) + 1e-6);
     const pool2 = sound.length ? sound : rounds;
     best = pool2.reduce((a, b) => (b.r.netSpend < a.r.netSpend ? b : a)).r;
 
@@ -730,18 +893,23 @@ window.SCHED = (function () {
     r.cGives = cGives;
     r.audit = KEYS.map((k) => {
       const stockUse = Math.min(stockOf(k), need0[k] || 0);
+      const tierQ = r.tierReward[k] || 0;
+      /* 夺宝换回来的量：夹在档位返利和充值返利之间，只算「前几层还不够」的部分 */
+      const room0 = Math.max(0, (need0[k] || 0) - stockUse - (free[k] || 0) - tierQ);
+      const dbQ = Math.min(((r.duobao && r.duobao.got[k]) || 0), room0);
       /* 充值送的量只有「前面几层还不够」的部分才真正顶用，超出的不算 */
-      const room = Math.max(0, (need0[k] || 0) - stockUse - (free[k] || 0) - (r.tierReward[k] || 0));
+      const room = Math.max(0, room0 - dbQ);
       const chg = Math.min(cGives[k] || 0, room);
       return {
         key: k, label: LBL[k],
         need: need0[k] || 0,
         stock: stockUse,
         free: free[k] || 0,
-        tier: r.tierReward[k] || 0,
+        tier: tierQ,
+        duobao: dbQ,
         charge: chg,
         buy: produced[k] || 0,
-        total: stockUse + (free[k] || 0) + (r.tierReward[k] || 0) + chg + (produced[k] || 0),
+        total: stockUse + (free[k] || 0) + tierQ + dbQ + chg + (produced[k] || 0),
       };
     }).filter((x) => x.need > 0);
     /* 本轮假设的充值返利量 vs 实际量：假设不能超过实际，否则核对表会「凑数」。
@@ -786,29 +954,48 @@ window.SCHED = (function () {
      收敛用「只减不增」：下一轮假设取 min(上一轮假设, 本轮实际)，
      这样假设永远不会超过实际，核对表不会靠假设凑数。
      最后只接受「假设 ≤ 实际」的自洽解，并在自洽解里取最便宜的那个。 */
+  /* 外层不动点：把「上一轮充值实际返到的中间产物」喂回去重算。
+     两个坑：
+     ① 只减不增（min）会卡死：假设 26 令、实际返 41 令，min 还是 26，
+        下一轮照 26 买，多买的 15 个永远消不掉。
+     ② 直接跳到实测值会震荡：假设 41 → 少买 → 档位掉 → 实际只返 26，
+        下一轮又跳回 41。两个解来回跳，谁都自洽不了。
+     这两条不是谁对谁错，是各擅长一类单子：小单 (min) 收敛得更省，
+     大单 (阻尼) 能找到中间的自洽点。再加一路「直接吃实测值」的激进收敛，
+     它会震荡，但震出来的两端里往往有一端是真正省钱的。
+     三套都跑，候选池合并后由 chargeBackOk + ok 筛，再取最便宜的。
+     代价是求解次数 ×3，单目标仍在 1 秒内。 */
   function build(names, opts) {
     const allKeys = cpnKeys().concat(KEYS);
     const cands = [];
-    let pool = {};
-    for (let i = 0; i < 8; i++) {
-      const r = solveOnce(names, opts, pool);
-      cands.push({ r, pool: Object.assign({}, pool) });
-      const g = r.cGives || (r.charge && r.charge.gives) || {};
-      const next = {};
-      let same = true;
-      allKeys.forEach((k) => {
-        const prev = pool[k] == null ? Infinity : pool[k];
-        const v = Math.min(prev, g[k] || 0);
-        next[k] = v;
-        if (Math.abs((pool[k] || 0) - v) > 1e-6) same = false;
-        else if (pool[k] == null && v > 0) same = false;
-      });
-      if (same) break;
-      pool = next;
-    }
-    const good = cands.filter((c) => c.r.chargeBackOk);
-    const pool2 = good.length ? good : cands;
-    return pool2.reduce((a, b) => (b.r.money < a.r.money - 1e-9 ? b : a)).r;
+    [1, 0, 2].forEach((mode) => {
+      let pool = {};
+      for (let i = 0; i < 16; i++) {
+        const r = solveOnce(names, opts, pool);
+        cands.push({ r, pool: Object.assign({}, pool) });
+        const g = r.cGives || (r.charge && r.charge.gives) || {};
+        const next = {};
+        let same = true;
+        allKeys.forEach((k) => {
+          const act = g[k] || 0;
+          const prev = pool[k] == null ? act : pool[k];
+          const v = i === 0 ? act
+            : mode === 1 ? (prev + act) / 2
+              : mode === 0 ? Math.min(prev, act) : act;
+          next[k] = v;
+          if (Math.abs((pool[k] || 0) - v) > 0.5) same = false;
+        });
+        if (same) break;
+        pool = next;
+      }
+    });
+    /* 优先选自洽（假设 ≤ 实际）**且不缺料**的解。
+       缺料必须排除：收领会把「只能靠返利拿」的品类（水晶球买不到）
+       卡在中间值，假设 5 个就少买 5 个，最后差一半还照样报价。 */
+    const allOk = cands.filter((c) => c.r.chargeBackOk && c.r.ok);
+    const backOk = cands.filter((c) => c.r.chargeBackOk);
+    const pickSet = allOk.length ? allOk : (backOk.length ? backOk : cands);
+    return pickSet.reduce((a, b) => (b.r.money < a.r.money - 1e-9 ? b : a)).r;
   }
 
   /* 逐日行：给 UI 用 */

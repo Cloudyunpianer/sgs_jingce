@@ -99,6 +99,7 @@ window.PARSER = (function () {
     const model = {
       meta: {}, systems: [], shops: {},
       coupons: {}, chargeTiers: [], cumCharge: [], dailyTiers: [], cumSpend: [],
+      dailyCumCharge: [],
       bundles: [], freeGains: [], boughtGains: [], directSales: [],
       unsupported: [], curLabel: {}, naxianDaily: [],
     };
@@ -246,7 +247,16 @@ window.PARSER = (function () {
       const mt = /累计参与(.+?)夺宝(\d+)次[（(]消耗(.+?)夺宝券\*(\d+)[）)][，,]\s*可领取奖励：(.+?)[，,]/.exec(line);
       if (mt) {
         const key = (curHead || '默认').replace(/——.*$/, '');
-        (dbSec[key] = dbSec[key] || []).push({ n: +mt[2], item: nq(mt[5]).name, tickets: +mt[4] });
+        /* item 是「这个档给什么」的展示名，沿用老口径（截到第一个逗号）；
+           gives 是给方案层算账用的，要整句奖励，否则「纳贤令*5」后面的项全丢 */
+        const body = line.replace(/^[\s\S]*?可领取奖励：/, '')
+          .replace(/[。]\s*$/, '')
+          .replace(/[，,]\s*(?:限完成\d+次).*$/, '');
+        const gives = toGives(body);
+        (dbSec[key] = dbSec[key] || []).push({
+          n: +mt[2], item: nq(mt[5]).name, tickets: +mt[4],
+          gives, label: body.slice(0, 24),
+        });
       }
     });
     if (Object.keys(dbSec).length) {
@@ -424,14 +434,15 @@ window.PARSER = (function () {
     /* ---------- 12. 累计充值 / 充值返券（单独存，不混进单笔档） ---------- */
     const dailyChgSeen = new Set();
     const dailySeen = new Set();
-    /* 「每日重置，累计充值X」不是一次性累计档，而是每天都能领的充值档。
-       以前被 cumRe 一起抓走，导致「充 5888 送 10 令/天」缩水成一次性 10 令。 */
+    /* 「每日重置，累计充值X」不是一次性累计档，也不是「花 X 元宝买一个档」，
+       而是**每天充值额达到 X 就送**，和单笔充值档叠加。
+       以前塞进 chargeTiers 当独立档，等于把「充 60 元顺带领 10 令」
+       算成「额外再掏 58.88 元买 10 令」，整期少算 40 多个纳贤令。 */
     const dailyChgRe = /每日重置[，,]\s*累计充值(?:达到)?(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
     while ((mm = dailyChgRe.exec(text))) {
       const gives = toGives(mm[2].replace(/[，,]\s*(?:每日)?限完成\d+次.*$/, ''));
-      model.chargeTiers.push({
-        need: +mm[1], gives, perDay: 1, total: undefined,
-        note: mm[2].slice(0, 36),
+      model.dailyCumCharge.push({
+        need: +mm[1], gives, note: mm[2].slice(0, 36),
       });
       dailyChgSeen.add(+mm[1] + '|' + JSON.stringify(gives));
     }
@@ -634,7 +645,10 @@ window.PARSER = (function () {
         freeCur: CUR.K.duobao, freePer: 5,
         buys: buysFor(CUR.K.duobao),
         table: [['其他道具', 99.5, {}]], pity: 'duobao',
-        progress: dbs[k].map((x) => ({ n: x.n, item: x.item })),
+        progress: dbs[k].map((x) => ({
+          n: x.n, item: x.item,
+          gives: x.gives || null, tickets: x.tickets || 0,
+        })),
       });
     });
     if (!Object.keys(dbs).length) log.push('本期末解析到夺宝 → 已清空');
@@ -682,6 +696,7 @@ window.PARSER = (function () {
     /* ---- 充值 / 消费 ---- */
     P.chargeTiers = (model.chargeTiers || []).slice();
     P.cumCharge = (model.cumCharge || []).slice();
+    P.dailyCumCharge = (model.dailyCumCharge || []).slice();
     P.dailyTiers = (model.dailyTiers || []).slice();
     P.cumSpend = (model.cumSpend || []).slice();
     if (!P.chargeTiers.length) log.push('本期末解析到充值档位 → 置空');

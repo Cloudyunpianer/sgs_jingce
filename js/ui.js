@@ -384,6 +384,8 @@
       days: state.ctx.days,
       stock: readStock(),
       lockCharge: state.lockCharge || null,
+      /* 0 = 自动按当期档位门槛挑最优；>0 = 强制按这个金额卡每天消费 */
+      budget: Math.max(0, +$('#pBudget').value || 0),
     });
     state.daily = r;
 
@@ -480,6 +482,7 @@
         <td class="num">${a.stock ? E.fmt(a.stock) : '—'}</td>
         <td class="num">${a.free ? E.fmt(a.free) : '—'}</td>
         <td class="num">${a.tier ? E.fmt(a.tier) : '—'}</td>
+        <td class="num">${a.duobao ? E.fmt(a.duobao) : '—'}</td>
         <td class="num">${a.charge ? E.fmt(a.charge) : '—'}</td>
         <td class="num">${E.fmt(a.buy)}</td>
         <td class="num ${a.total >= a.need ? 'ok' : 'bad'}">${E.fmt(a.total)}</td>
@@ -612,6 +615,7 @@
         <td class="num">${a.stock ? E.fmt(a.stock) : '—'}</td>
         <td class="num">${a.free ? E.fmt(a.free) : '—'}</td>
         <td class="num">${a.tier ? E.fmt(a.tier) : '—'}</td>
+        <td class="num">${a.duobao ? E.fmt(a.duobao) : '—'}</td>
         <td class="num">${a.charge ? E.fmt(a.charge) : '—'}</td>
         <td class="num">${E.fmt(a.buy)}</td>
         <td class="num ${a.total >= a.need ? 'ok' : 'bad'}">${E.fmt(a.total)}</td>
@@ -628,11 +632,13 @@
       <div class="audit-block">
         <h3>核对</h3>
         <table class="plan-table aud-plan">
-          <thead><tr><th>道具</th><th class="num">需要</th><th class="num">期初</th><th class="num">白送</th><th class="num">档位返</th><th class="num">充值</th><th class="num">要买</th><th class="num">合计</th></tr></thead>
+          <thead><tr><th>道具</th><th class="num">需要</th><th class="num">期初</th><th class="num">白送</th><th class="num">档位返</th><th class="num">夺宝</th><th class="num">充值</th><th class="num">要买</th><th class="num">合计</th></tr></thead>
           <tbody>${aud}</tbody>
         </table>
       </div>
       <p class="sumline">充值 <b>¥${E.fmt(r.money)}</b>（${chgList}）· 到账 <b>${E.fmt(r.charge.yb)}</b> 元宝 · 实付 <b>${E.fmt(r.netSpend)}</b> · 抵价券省 <b>${E.fmt(r.couponSave)}</b>${r.charge.yb - r.netSpend > 1 ? ` · 余 <b>${E.fmt(r.charge.yb - r.netSpend)}</b>` : ''}</p>
+      ${r.budget > 0 ? `<p class="hint">逐日预算：按每天 <b>${E.fmt(r.budget)}</b> 元宝卡当日消费档，共 ${r.act} 天有花销。每日档（含每日重置的充值档）按天各结算一次，堆在一天只能吃一次。</p>` : ''}
+      ${r.duobao && r.duobao.detail && r.duobao.detail.length ? `<p class="hint">夺宝兑换：本期返到 <b>${E.fmt(r.duobao.pool)}</b> 张夺宝券，打 ${r.duobao.detail.map((x) => `${x.pool} ${x.plays} 次（${x.coupons} 券）`).join(' + ')}，换回 ${Object.keys(r.duobao.got).map((k) => `${k}×${E.fmt(r.duobao.got[k])}`).join('、')}。券不打夺宝就作废。</p>` : ''}
       ${r.extras.length ? `<p class="hint">顺带拿到：${r.extras.map((x) => `${x.label}×${E.fmt(x.qty)}`).join(' · ')}</p>` : ''}`;
   }
 
@@ -1171,9 +1177,13 @@
     });
     L.push('');
     L.push(`合计：充值 ¥${E.fmt(r.money)}，到账 ${E.fmt(r.charge.yb)} 元宝，实付 ${E.fmt(r.netSpend)}，抵价券省 ${E.fmt(r.couponSave)}`);
+    if (r.budget > 0) L.push(`逐日预算：每天 ${E.fmt(r.budget)} 元宝，${r.act} 天有花销（每日重置档按天各结算一次）`);
+    if (r.duobao && r.duobao.detail && r.duobao.detail.length) {
+      L.push(`夺宝兑换：${r.duobao.pool} 张券 → ${r.duobao.detail.map((x) => `${x.pool}${x.plays}次`).join('+')}，换回 ${Object.keys(r.duobao.got).map((k) => `${k}×${E.fmt(r.duobao.got[k])}`).join('、')}`);
+    }
     L.push('');
     L.push('核对：');
-    r.audit.forEach((a) => L.push(`  ${a.label}：需要 ${E.fmt(a.need)}，白送 ${E.fmt(a.free)}，档位 ${E.fmt(a.tier)}，买 ${E.fmt(a.buy)}`));
+    r.audit.forEach((a) => L.push(`  ${a.label}：需要 ${E.fmt(a.need)}，白送 ${E.fmt(a.free)}，档位 ${E.fmt(a.tier)}，夺宝 ${E.fmt(a.duobao || 0)}，充值 ${E.fmt(a.charge || 0)}，买 ${E.fmt(a.buy)}`));
     navigator.clipboard.writeText(L.join('\n')).then(() => {
       const b = $('#btnCopy');
       const t = b.textContent; b.textContent = '已复制';
@@ -1187,6 +1197,7 @@
     $('#pDays').value = P.meta.days;
     $('#pRatio').value = 100;
     $('#pKnot').value = P.params.qifuExtraKnot;
+    if ($('#pBudget')) $('#pBudget').value = 0;
 
     if (restoreLocal() && P.meta.imported) { /* 使用上次导入的数据 */ }
     renderCouponStock();
@@ -1203,7 +1214,7 @@
     renderPlan();
 
     $('#search').oninput = (e) => { state.q = e.target.value; renderGrid(); };
-    ['#pDays', '#pRatio', '#pKnot', '#sYb', '#sJade', '#sLamp', '#sNana'].forEach((sel) => {
+    ['#pDays', '#pRatio', '#pKnot', '#pBudget', '#sYb', '#sJade', '#sLamp', '#sNana'].forEach((sel) => {
       const el = $(sel);
       if (el) el.addEventListener('change', recalc);
     });

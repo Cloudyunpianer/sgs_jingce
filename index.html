@@ -49,6 +49,12 @@
           <input type="number" id="pKnot" value="1" readonly>
           <span class="unit">结/灯</span>
         </div>
+        <div class="field">
+          <label title="留 0 = 自动按当期档位门槛挑最优；填数字 = 强制按这个金额卡每天的消费">每日预算</label>
+          <input type="number" id="pBudget" min="0" step="1000" value="0">
+          <span class="unit">元宝/天</span>
+        </div>
+        <p class="hint">每日重置的档位（消费档、累计充值档）只能一天吃一份，所以购买量要摊到天。留 <b>0</b> 让工具自己按当期门槛挑最优；填 <b>10000</b> 这类数字就是强制「每天花这个数」，对应手搓攻略里「每天卡 1 万滚 N 天」的打法。</p>
         <p class="hint">固定 <b>1 灯 = 1 结</b>，不再按均值估算：要 200 结就攒 200 灯。累计积分档位送的结是额外收益，不拿来抵扣灯数。</p>
       </section>
 

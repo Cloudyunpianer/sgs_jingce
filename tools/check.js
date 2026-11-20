@@ -110,7 +110,7 @@ console.log('合计充值', money(cp.total), '元宝 = ¥' + money(cp.total / 10
      降 —— 充值返的灯/令真的回冲需求了，不再「账本记着、方案照买」。
    ============================================================ */
 console.log('\n--- 回归（券后实付，¥） ---');
-const REG = [['威曹彰', 838], ['谋钟会', 256], ['任婉', 646], ['春宵彩翼*任婉', 310], ['谋程普', 328]];
+const REG = [['威曹彰', 832], ['谋钟会', 256], ['任婉', 646], ['春宵彩翼*任婉', 298], ['谋程普', 328]];
 REG.forEach(([n, want]) => {
   const r = S.build([n], { days: 9, stock: {} });
   eq(`${n} 需充值`, r.money, want);
@@ -209,7 +209,7 @@ dp.forEach((d) => ok(`凑额「${d.tag}」覆盖目标`,
    断言 4：反查结果 ≤ 单买
    ============================================================ */
 console.log('\n--- 断言 4：反查 ≤ 单买 ---');
-[['威曹彰', 838], ['谋钟会', 256], ['任婉', 646]].forEach(([n, reg]) => {
+[['威曹彰', 832], ['谋钟会', 256], ['任婉', 646]].forEach(([n, reg]) => {
   const res = M.search(n, 1, ctx, { stock: { coupons: {} } });
   if (res.err) { console.log('!!', n, res.err); fail++; return; }
   const top = res.rows[0];
@@ -304,7 +304,7 @@ ok('期初抵扣后总花费下降', sJade.money < sBase.money,
 const sLamp = S.build(['任婉'], { days: 9, stock: { items: { 祈福灯: 100 } } });
 eq('期初 100 灯后只需买 83 灯', sLamp.audit[0].buy, 83);
 const sNx = S.build(['谋钟会'], { days: 9, stock: { items: { 纳贤令: 50 } } });
-eq('期初 50 令后只需买 44 令', sNx.audit[0].buy, 44);
+eq('期初 50 令后只需买 43 令', sNx.audit[0].buy, 43);
 ok('期初 + 白送 + 档位 + 购买 = 需求', [sJade, sLamp, sNx]
   .every((r) => r.audit.every((a) => a.total >= a.need - 1e-6)),
   [sJade, sLamp, sNx].map((r) => r.audit.map((a) => `${a.label} ${a.stock}+${a.free}+${a.tier}+${a.buy}`).join('/')).join(' | '));
@@ -424,9 +424,9 @@ const SAMPLES = [
   { file: '20260904_8061_5810.md', days: 9, targets: 68, money: 6007, note: '开学焕新' },
   { file: '20260910_1235_5818.md', days: 5, targets: 32, money: 1212, note: '秋日活动' },
   { file: '20260916_7285_4514.md', days: 9, targets: 61, money: 3000, note: '中秋砸蛋' },
-  { file: '20260922_3527_1115.md', days: 3, targets: 18, money: 1494, note: '金秋预热' },
+  { file: '20260922_3527_1115.md', days: 3, targets: 18, money: 1594, note: '金秋预热' },
   { file: '20260929_3980_1514.md', days: 10, targets: 60, money: 5978, note: '金秋盛典' },
-  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 1806, note: '初冬纳贤' },
+  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 1152, note: '初冬纳贤' },
 ];
 console.log('\n— 真实样本回归 —');
 SAMPLES.forEach((sp) => {
@@ -506,6 +506,51 @@ SAMPLES.forEach((sp) => {
     plan.charge.picks.filter((p) => !p.alt).forEach((p) => Object.keys(p.t.gives || {}).forEach((k) => aOnly.add(k)));
     const leaked = [...altKeys].filter((k) => !aOnly.has(k) && (plan.charge.gives[k] || 0) > 0);
     ok(`${sp.note} 双倍箱不叠加`, leaked.length === 0, leaked.join('、') || '无泄漏');
+  }
+  {
+    /* 夺宝转盘：每个档位都要带 gives 字段，方案层才知道「打多少次要多少券、换回什么」。
+       以前只存了 item 名，「纳贤令*5」的数量整个丢掉，券等于白返。
+       注意：很多期的夺宝档给的是皮肤/宝箱，折算不了，gives 是空对象——那是正常的，
+       这里只断言「字段在」，不断言「有值」。 */
+    const pools = P.systems.filter((s) => s.pool === 'duobao');
+    const all = [];
+    pools.forEach((s) => (s.progress || []).forEach((x) => all.push(x)));
+    const missing = all.filter((x) => !('gives' in x) || !('tickets' in x));
+    const valued = all.filter((x) => x.gives && Object.keys(x.gives).length);
+    ok(`${sp.note} 夺宝档位带奖励与券耗`, missing.length === 0,
+      missing.length ? `缺字段 ${missing.length} 档`
+        : `${all.length} 档，其中 ${valued.length} 档可折价：${valued.map((x) => `${x.tickets}券→${JSON.stringify(x.gives)}`).join(' ')}`);
+  }
+  {
+    /* 夺宝兑换出来的量不能超过「实际返到的券能换到的」，
+       否则就是凭空造出纳贤令 */
+    const db = plan.duobao || {};
+    const pool = db.pool || 0;
+    const spent = db.used || 0;
+    ok(`${sp.note} 夺宝兑换不超券量`,
+      spent <= pool + 1e-6,
+      `用 ${spent} 张 / 可支配 ${pool} 张 → ${JSON.stringify(db.got || {})}`);
+  }
+  {
+    /* 每日累计充值档：门槛看「当天充值额」，充 60 元那天 6000 档和 5888 门槛都要发。
+       以前 5888 被当成独立充值档，等于「额外再掏 58.88 元买 10 令」。 */
+    const dc = P.dailyCumCharge || [];
+    if (dc.length) {
+      const perDay = {};
+      plan.charge.picks.forEach((p) => {
+        const y = p.t.need + (p.alt && p.t.alt ? (p.t.alt['绑定元宝'] || 0) : 0);
+        (p.days || []).forEach((d) => { perDay[d] = (perDay[d] || 0) + y; });
+      });
+      const hitDays = Object.keys(perDay).filter((d) => dc.some((t) => perDay[d] + 1e-6 >= t.need)).length;
+      const dcGot = {};
+      dc.forEach((t) => Object.keys(t.gives).forEach((k) => { dcGot[k] = (dcGot[k] || 0) + t.gives[k] * hitDays; }));
+      const realGot = plan.charge.gives || {};
+      /* 实际发放量必须 ≥ 按天推算的量（多算不能有，少算说明漏发） */
+      const over = Object.keys(dcGot).filter((k) => (dcGot[k] || 0) > (realGot[k] || 0) + 1e-6);
+      ok(`${sp.note} 每日累计充值按天发放`, over.length === 0,
+        over.length ? over.map((k) => `${k} 应发${dcGot[k]}/实发${realGot[k] || 0}`).join(' ')
+          : `达标 ${hitDays} 天 → ${JSON.stringify(dcGot)}`);
+    }
   }
 });
 
