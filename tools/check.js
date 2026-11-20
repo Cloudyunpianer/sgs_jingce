@@ -6,8 +6,8 @@ const path = require('path');
 global.window = {};
 const root = path.join(__dirname, '..');
 const rd = (f) => fs.readFileSync(path.join(root, 'js', f), 'utf8');
-eval(rd('data.js') + '\n' + rd('engine.js') + '\n' + rd('plan.js') + '\n'
-  + rd('classify.js') + '\n' + rd('rates.js') + '\n' + rd('mincost.js'));
+eval(rd('currency.js') + '\n' + rd('data.js') + '\n' + rd('engine.js') + '\n' + rd('plan.js') + '\n'
+  + rd('classify.js') + '\n' + rd('rates.js') + '\n' + rd('mincost.js') + '\n' + rd('parser.js'));
 
 const EN = global.window.E;
 const P = global.window.PRESET;
@@ -104,10 +104,13 @@ console.log('充值建议（有档位奖励）:', cp.picks.map((p) => p.need + '
 console.log('合计充值', money(cp.total), '元宝 = ¥' + money(cp.total / 100));
 
 /* ============================================================
-   回归：券后实付（走完整排程）必须一字不变
+   回归：中间产物回冲 + 双倍箱不叠加之后的券后实付
+   数值较 0.7.x 有升有降，两边都是修 bug：
+     涨 —— 双倍箱「换绑元」时不再同时白送道具包，旧值靠双算虚低；
+     降 —— 充值返的灯/令真的回冲需求了，不再「账本记着、方案照买」。
    ============================================================ */
 console.log('\n--- 回归（券后实付，¥） ---');
-const REG = [['威曹彰', 768], ['谋钟会', 262], ['任婉', 614], ['春宵彩翼*任婉', 280], ['谋程普', 328]];
+const REG = [['威曹彰', 840], ['谋钟会', 280], ['任婉', 646], ['春宵彩翼*任婉', 310], ['谋程普', 328]];
 REG.forEach(([n, want]) => {
   const r = S.build([n], { days: 9, stock: {} });
   eq(`${n} 需充值`, r.money, want);
@@ -206,7 +209,7 @@ dp.forEach((d) => ok(`凑额「${d.tag}」覆盖目标`,
    断言 4：反查结果 ≤ 单买
    ============================================================ */
 console.log('\n--- 断言 4：反查 ≤ 单买 ---');
-[['威曹彰', 768], ['谋钟会', 262], ['任婉', 614]].forEach(([n, reg]) => {
+[['威曹彰', 840], ['谋钟会', 280], ['任婉', 646]].forEach(([n, reg]) => {
   const res = M.search(n, 1, ctx, { stock: { coupons: {} } });
   if (res.err) { console.log('!!', n, res.err); fail++; return; }
   const top = res.rows[0];
@@ -247,6 +250,10 @@ if (jadeRoute) {
 
 /* 结余券默认换购：每张券抵一张券的面额，不多不少 */
 const rL = S.build(['威曹彰', '谋钟会', '任婉', '春宵彩翼*任婉'], { days: 9, stock: {} });
+/* 四目标混池最容易暴露「档位返利震荡」：少买 → 档位掉 → 返利没了 → 缺口。
+   收敛后必须一件不缺，否则页面会一边给总价、一边提示「还要：祈福灯 4」。 */
+ok('四目标混池不缺料', rL.ok === true && (rL.shortItems || []).length === 0,
+  (rL.shortItems || []).map((x) => `${x.label} 缺 ${x.lack}`).join('、') || '无缺口');
 const ledL = S.ledger(rL, { coupons: {} });
 const lf = S.leftoverPlan(ledL);
 eq('换购张数 = 券结余张数', lf.n, ledL.left);
@@ -313,6 +320,151 @@ eqs('锦绣商店皮肤 → 锦绣皮肤', lib.get('春宵彩翼*任婉').cat, '
 eqs('直售皮肤 → 直售皮肤', lib.get('树影曳情*环怀瑾').cat, '直售皮肤');
 ok('三类皮肤都有货', catCount['转盘皮肤'] > 0 && catCount['锦绣皮肤'] > 0 && catCount['直售皮肤'] > 0,
   `转盘 ${catCount['转盘皮肤']} / 锦绣 ${catCount['锦绣皮肤']} / 直售 ${catCount['直售皮肤']}`);
+
+/* ---------- 断言 7：换期解析器（去专名 / 补六块 / 白送口径） ---------- */
+console.log('\n--- 断言 7：换期解析（虚构一期，全部用非本期专名） ---');
+const md = [
+  '# 测试期 1.1-1.7',
+  '',
+  '活动时间：2026-01-01 00:00:00 ~ 2026-01-07 23:59:59',
+  '',
+  '**测试礼盒**',
+  '',
+  '每开启一次礼盒必定获得灵韵*250，并随机获得以下道具。',
+  '',
+  '| 道具 | 概率 | 备注 |',
+  '| --- | --- | --- |',
+  '| 测试武将 | 0.5% | 重复返还大将军印*1 |',
+  '| 传世宝玉×2 | 1.2% |  |',
+  '| 宝玉碎片×5 | 13% |  |',
+  '| 皮肤包 | 10% |  |',
+  '',
+  '每累计开启测试宝箱*50，可获得奖励：传世宝玉*1，限完成20次。',
+  '',
+  '**珍宝商店更新**',
+  '',
+  '| 道具名 | 消耗宝玉 | 可兑换次数 |',
+  '| --- | --- | --- |',
+  '| 测试武将 | 20 | 1 |',
+  '',
+  '累计参与测试夺宝80次（消耗测试夺宝券*400），可领取奖励：高级转生丹*1，限完成1次。',
+  '',
+  '累计参与测试夺宝160次（消耗测试夺宝券*800），可领取奖励：测试皮肤，限完成1次。',
+  '',
+  '## 二、纳贤活动',
+  '',
+  '累计纳贤测试将*120，可领取奖励：测试将、大将军印*1，4选1，限完成1次。',
+  '',
+  '## 三、钜惠商城',
+  '',
+  '| 商品名称 | 说明 | 售价 |',
+  '| --- | --- | --- |',
+  '| 测试福利勋章 | 限购买1次。购买后可获得测试福利勋章*1。 | 5888元宝 |',
+  '| 纳贤令礼包 | 购买后可获得纳贤令*1。 | 1000元宝 |',
+  '',
+  '**测试福利勋章**',
+  '',
+  '| 登录天数 | 奖励1 | 奖励2 |',
+  '| --- | --- | --- |',
+  '| 第1天 | 纳贤令*2 | 测试夺宝券*20 |',
+  '',
+  '## 四、充值活动',
+  '',
+  '单笔充值1200元宝，可领取奖励：测试抵价券（3000-2500）*1，纳贤令*2，限完成1次。',
+  '',
+  '单笔充值3000元宝，可领取奖励：纳贤令*3，每日限完成1次。',
+  '',
+  '累计充值达到10000元宝，可领取奖励：测试宝箱*1，限完成1次。',
+  '',
+  '## 五、消费活动',
+  '',
+  '每日消费达到3888元宝，可领取奖励：测试夺宝券*5、纳贤令*1，每日限完成1次。',
+  '',
+  '累计消费达到30000元宝，可领取奖励：传世宝玉*3，限完成1次。',
+  '',
+  '## 六、测试砸蛋',
+  '',
+  '| 道具 | 概率 |',
+  '| --- | --- |',
+  '| 测试皮肤 | 0.5% |',
+].join('\n');
+
+const PARSED = window.PARSER.parse(md);
+const PM = PARSED.model;
+const box = (PM.systems || []).filter((s) => s.kind === 'box');
+eqs('礼盒识别数', box.length, 1);
+eqs('礼盒名（非本期专名）', box[0] && box[0].name, '测试礼盒');
+eqs('礼盒必定掉落', Object.keys(box[0] && box[0].always || {}).length, 1);
+eqs('珍宝助力上限', box[0] && box[0].mile.cap, 20);
+eqs('宝玉商店项数', (PM.shops.jade || []).length, 1);
+eqs('夺宝转盘数（去专名）', Object.keys(PM.shops.duobao || {}).length, 1);
+eqs('夺宝进度档数', (Object.values(PM.shops.duobao || {})[0] || []).length, 2);
+eqs('纳贤进度项数', (PM.shops.naxian || []).length, 1);
+eqs('抵价券面额 key', Object.keys(PM.coupons || {})[0], '券2500');
+eqs('抵价券 min', PM.coupons['券2500'] && PM.coupons['券2500'].min, 3000);
+eqs('单笔充值档数', PM.chargeTiers.length, 2);
+ok('单笔 1200 带券', JSON.stringify(PM.chargeTiers.find((t) => t.need === 1200).gives) === '{"券2500":1,"纳贤令":2}',
+  JSON.stringify(PM.chargeTiers.find((t) => t.need === 1200).gives));
+eqs('累计充值单独存放', PM.cumCharge.length, 1);
+eqs('每日消费档数', PM.dailyTiers.length, 1);
+eqs('累计消费档数（含宝玉）', PM.cumSpend.length, 1);
+eqs('累计消费给宝玉', (PM.cumSpend[0] && PM.cumSpend[0].gives['传世宝玉']) || 0, 3);
+ok('勋章产出进「需购买」而非白送', PM.boughtGains.length > 0 && !PM.freeGains.some((f) => f.from === '测试福利勋章'),
+  `bought=${PM.boughtGains.length} free=${PM.freeGains.length}`);
+ok('券名归一：测试夺宝券 → 狂欢夺宝券',
+  PM.boughtGains.some((b) => b.cur === '狂欢夺宝券') && PM.dailyTiers.some((d) => d.gives['狂欢夺宝券'] === 5));
+ok('未建模玩法被标记', PM.unsupported.some((u) => u.name === '幸运砸蛋'),
+  PM.unsupported.map((u) => u.name).join('、') || '（无）');
+
+/* ---------------- 真实样本回归：官网公告 → 导入 → 出方案 ----------------
+   样本放在 samples/，全部来自官网原文转 markdown，不含任何本期专名依赖。
+   只断言「能跑通 + 关键量不漂」，具体金额变动时同步更新这里的期望值。 */
+const SAMPLE_DIR = path.join(root, 'samples');
+const SAMPLES = [
+  { file: '20260904_8061_5810.md', days: 9, targets: 70, money: 6027, note: '开学焕新' },
+  { file: '20260910_1235_5818.md', days: 5, targets: 23, money: 2078, note: '秋日活动' },
+  { file: '20260916_7285_4514.md', days: 9, targets: 62, money: 3000, note: '中秋砸蛋' },
+  { file: '20260922_3527_1115.md', days: 3, targets: 25, money: 2217, note: '金秋预热' },
+  { file: '20260929_3980_1514.md', days: 10, targets: 62, money: 5978, note: '金秋盛典' },
+];
+console.log('\n— 真实样本回归 —');
+SAMPLES.forEach((sp) => {
+  const p = path.join(SAMPLE_DIR, sp.file);
+  if (!fs.existsSync(p)) { ok(`${sp.note} 样本存在`, false, p); return; }
+  const txt = fs.readFileSync(p, 'utf8');
+  const parsed = window.PARSER.parse(txt);
+  window.PARSER.apply(parsed.model);
+  EN.reset();
+  T.reset();
+  const l = EN.buildLibrary();
+  const names = [...l.keys()].slice(0, 3);
+  const plan = S.build(names, { days: P.meta.days, stock: { coupons: {}, yb: 0, items: {} } });
+  eqs(`${sp.note} 天数`, P.meta.days, sp.days);
+  eqs(`${sp.note} 目标数`, l.size, sp.targets);
+  eqs(`${sp.note} 三目标总价`, Math.round(plan.money), sp.money);
+  ok(`${sp.note} 目标都有渠道`, (plan.noRoute || []).length === 0, (plan.noRoute || []).join('、'));
+
+  /* --- 中间产物闭环：四道闸 --- */
+  ok(`${sp.note} 到账够花`,
+    plan.charge.yb + 1e-6 >= plan.netSpend,
+    `到账 ${money(plan.charge.yb)} ≥ 净消费 ${money(plan.netSpend)}`);
+  ok(`${sp.note} 逐项不缺料`,
+    plan.audit.every((a) => a.total >= a.need - 1e-6),
+    plan.audit.map((a) => `${a.label} ${a.total}/${a.need}`).join(' '));
+  ok(`${sp.note} 返利假设不超过实际`,
+    plan.chargeBackOk !== false,
+    Object.keys(plan.chargeBack || {}).filter((k) => plan.chargeBack[k] > 0)
+      .map((k) => `${k} 假设${plan.chargeBack[k]}/实际${plan.charge.gives[k] || 0}`).join(' ') || '本轮无回冲');
+  {
+    /* 走「换绑元」的档位，不能再把道具包算进产出（双倍箱二选一） */
+    const altKeys = new Set();
+    plan.charge.picks.filter((p) => p.alt).forEach((p) => Object.keys(p.t.gives || {}).forEach((k) => altKeys.add(k)));
+    const aOnly = new Set();
+    plan.charge.picks.filter((p) => !p.alt).forEach((p) => Object.keys(p.t.gives || {}).forEach((k) => aOnly.add(k)));
+    const leaked = [...altKeys].filter((k) => !aOnly.has(k) && (plan.charge.gives[k] || 0) > 0);
+    ok(`${sp.note} 双倍箱不叠加`, leaked.length === 0, leaked.join('、') || '无泄漏');
+  }
+});
 
 console.log(fail ? `\n${fail} 项不通过` : '\n全部通过');
 process.exit(fail ? 1 : 0);

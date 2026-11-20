@@ -32,7 +32,7 @@ const E = {};
     const opts = (sys.buys || [{ qty: 1, price: sys.price || 0 }]).map((o) => ({
       ...o,
       cur: o.cur || '元宝',
-      cap: o.maxTotal != null ? o.maxTotal : (o.perDay != null ? o.perDay * ctx.days : Infinity),
+      cap: o.maxTotal > 0 ? o.maxTotal : (o.perDay > 0 ? o.perDay * ctx.days : Infinity),
     })).filter((o) => o.qty > 0 && o.price > 0);
     if (!opts.length) return { yb: 0, uni: 0, picks: [], units: 0, over: 0 };
 

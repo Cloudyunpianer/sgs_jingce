@@ -29,11 +29,11 @@ window.SCHED = (function () {
     const out = [];
     P.systems.forEach((sys) => {
       let key = null, mul = 1;
-      if (/^box_/.test(sys.id)) key = '盒';
-      else if (sys.id === 'qifu') key = '祈福灯';
-      else if (sys.id === 'naxian') key = '纳贤令';
-      else if (sys.id === 'jinxiu') key = '锦绣';
-      else if (/^db_/.test(sys.id)) { key = '狂欢夺宝券'; mul = 5; }
+      if (sys.kind === 'box') key = '盒';
+      else if (sys.kind === 'qifu') key = '祈福灯';
+      else if (sys.kind === 'progress') key = '纳贤令';
+      else if (sys.kind === 'jinxiu') key = '锦绣';
+      else if (sys.kind === 'gacha') { key = '狂欢夺宝券'; mul = 5; }
       if (!key) return;
       (sys.buys || []).forEach((b, i) => {
         if (!b.price) return;
@@ -45,7 +45,8 @@ window.SCHED = (function () {
           gives: { [key]: b.qty * mul },
           perDay: b.perDay || 0,
           total: b.maxTotal != null ? b.maxTotal : 0,
-          c1111: b.price >= 3000 && /纳贤|锦绣|夺宝|祈福|威曹彰|招募|大礼包|礼盒/.test((b.label || '') + sys.name),
+          /* 能否上抵价券：只看品类（价格门槛在 applyCoupons 里按券的 min 判） */
+          c1111: /纳贤|锦绣|夺宝|祈福|招募|大礼包|礼盒/.test((b.label || '') + sys.name),
           src: sys.name,
         });
       });
@@ -74,9 +75,13 @@ window.SCHED = (function () {
   }
 
   function needOf(names) {
-    const nd = { 盒: 0, 祈福灯: 0, 纳贤令: 0, 锦绣: 0, 狂欢夺宝券: 0, 狂欢水晶球: 0, 直购: 0 };
+    const nd = {};
+    KEYS.forEach((k) => { nd[k] = 0; });
+    nd['直购'] = 0;
     const pick = [];
-    const satinEv = P.systems.find((s) => s.id === 'jinxiu').satinEv || 0.84;
+    const jxSys = P.systems.find((s) => s.kind === 'jinxiu');
+    const satinEv = (jxSys && jxSys.satinEv) || 0.84;
+    const nxSys = P.systems.find((s) => s.kind === 'progress') || {};
 
     (names || []).forEach((nm) => {
       const cands = [];
@@ -84,17 +89,27 @@ window.SCHED = (function () {
       if (jd) cands.push({ kind: '盒', qty: jd.cost * 50, via: `宝玉 ${jd.cost} 个`, est: jd.cost * 10000 });
       const qf = shopItem('qifu', nm);
       if (qf) { const l = knotLamps(qf.cost); cands.push({ kind: '祈福灯', qty: l, via: `同心结 ${qf.cost} 个`, est: l * UNIT.祈福灯 }); }
-      const nx = (P.systems.find((s) => s.id === 'naxian').progress || []).find((p) => p.item === nm);
+      const nx = (nxSys.progress || []).find((p) => p.item === nm);
       if (nx) cands.push({ kind: '纳贤令', qty: nx.n, via: `纳贤 ${nx.n} 次`, est: nx.n * UNIT.纳贤令 });
       const jx = shopItem('jinxiu', nm);
       if (jx) { const d = ceil(jx.cost / satinEv); cands.push({ kind: '锦绣', qty: d, via: `绸缎 ${jx.cost} 匹`, est: d * UNIT.锦绣 }); }
-      const db = ['db_ljjp', 'db_wcz', 'db_fc'].map((id) => P.systems.find((s) => s.id === id))
-        .map((s) => ((s && s.progress) || []).find((p) => p.item === nm)).find(Boolean);
+      const db = P.systems.filter((s) => s.kind === 'gacha')
+        .map((s) => (s.progress || []).find((p) => p.item === nm)).find(Boolean);
       if (db) cands.push({ kind: '狂欢夺宝券', qty: db.n * 5, via: `夺宝 ${db.n} 抽`, est: db.n * 5 * UNIT.狂欢夺宝券 });
       const cr = shopItem('crystal', nm);
       if (cr) cands.push({ kind: '狂欢水晶球', qty: cr.cost, via: `水晶球 ${cr.cost} 个`, est: cr.cost * UNIT.狂欢水晶球 });
       const ds = (P.directSales || []).find((d) => d.name === nm && d.price > 0);
       if (ds) cands.push({ kind: '直购', qty: ds.price, via: '皮肤直售', est: ds.price });
+      /* 签筒：不放回抽，筒内签数抽完必出大奖 → 保底次数是确定的 */
+      P.systems.filter((s) => s.kind === 'tube' && s.tube && s.tube.jackpot === nm).forEach((s) => {
+        const sign = s.tube.sign;
+        if (!sign || !sign.price) return;
+        const draws = Math.max(1, (s.tube.N || 100) - (s.tube.prizes || 1) + 1);
+        cands.push({
+          kind: '直购', qty: draws * sign.price, via: `${sign.name} ${draws} 抽`,
+          est: draws * sign.price, tube: true,
+        });
+      });
 
       if (!cands.length) { pick.push({ name: nm, via: '本期无确定途径', kind: null }); return; }
       cands.sort((a, b) => a.est - b.est);
@@ -220,12 +235,18 @@ window.SCHED = (function () {
     return got;
   }
 
+  /* 抵价券 key 列表（按面额从大到小）——不写死，跟着 P.coupons 走 */
+  function cpnKeys() {
+    return Object.keys(P.coupons || {}).sort((a, b) => (P.coupons[b].face || 0) - (P.coupons[a].face || 0));
+  }
+
   /* 抵价券：一次购买只能用一张 */
   function applyCoupons(dist, pool) {
-    const left = Object.assign({ 券1111: 0, 券2888: 0, 券6665: 0 }, pool);
+    const left = {};
+    cpnKeys().forEach((k) => { left[k] = (pool && pool[k]) || 0; });
     let save = 0;
     const used = {};
-    ['券6665', '券2888', '券1111'].forEach((ck) => {
+    cpnKeys().forEach((ck) => {
       const def = P.coupons[ck];
       let avail = left[ck] || 0;
       if (!avail || !def) return;
@@ -317,15 +338,63 @@ window.SCHED = (function () {
   }
 
   /* ---------------- 六、充值组合 ---------------- */
+  /* 道具折算单价：和倍率页同源（当期商城最低可得价）；rates 尚未加载时回退本地估价 */
+  function priceTable() {
+    const R = window.RATES;
+    if (R && R.unitTable) {
+      try { return R.unitTable(); } catch (e) { /* 回退 */ }
+    }
+    return Object.assign({ 绑定元宝: 1 }, UNIT);
+  }
+
+  /* 双倍箱档位只能「道具包 / 换绑元」二选一，先按当单需求静态定一条路线：
+       道具包 → 到账 need，返的道具按折算价抵需求
+       换绑元 → 到账 need + 绑元，不返道具
+     判据是「返利道具对当单值多少钱」vs「绑元面值」，取高的那条。
+     券不进这个比较：券已经在 settle 里压过当日实付，再算一次就是双算。 */
+  function pickRoute(t, demand, U) {
+    if (!t.alt) return { route: 'A', y: t.need, giveVal: 0 };
+    const giveVal = Object.keys(t.gives || {}).reduce((a, k) => {
+      if (k === '绑定元宝' || (P.coupons && P.coupons[k])) return a;
+      if (demand && !demand.has(k)) return a;
+      return a + (t.gives[k] || 0) * (U[k] || 0);
+    }, 0);
+    const bind = t.alt['绑定元宝'] || 0;
+    return giveVal > bind
+      ? { route: 'A', y: t.need, giveVal }
+      : { route: 'B', y: t.need + bind, giveVal: 0 };
+  }
+
+  /* opts.fixed：锁定充值组合（「先选充值再选将」用）。
+     传进来的每项 {i, n, alt}（i = P.chargeTiers 原始索引）或 {t, n, alt}，
+     直接按它摊天，不再走凑额 DP——用户既然选定了档位，就不该被算法改掉。 */
   function chargePlan(ybNeed, opts) {
     const days = opts.days;
-    const tabs = (P.chargeTiers || []).map((t) => ({
+    const demand = opts.demand || null;
+    const tabs = (P.chargeTiers || []).map((t, i) => ({
       ...t,
-      cap: t.total != null ? t.total : (t.perDay ? t.perDay * days : 1),
+      idx: i,
+      cap: t.total > 0 ? t.total : (t.perDay ? t.perDay * days : 1),
     })).filter((t) => !(t.onlyDay && t.onlyDay > days));
 
-    const picks = [];
-    let covered = 0;
+    let picks = [];
+    let covered = 0;   /* 等效购买力累计（DP 约束用） */
+    let gotYb = 0;     /* 真实到账元宝 */
+
+    if (opts.fixed && opts.fixed.length) {
+      opts.fixed.forEach((x) => {
+        const t = x.t || tabs.find((y) => y.idx === x.i)
+          || (P.chargeTiers[x.i] ? tabs.find((y) => y.need === P.chargeTiers[x.i].need) : null);
+        if (!t) return;
+        const n = Math.max(0, Math.floor(x.n == null ? 1 : x.n));
+        if (!n) return;
+        const nb = Math.min(n, t.cap || n);
+        const isAlt = t.alt ? !!x.alt : false;
+        picks.push({ t, n: nb, alt: isAlt });
+        const y = t.need + (isAlt ? (t.alt['绑定元宝'] || 0) : 0);
+        covered += y * nb; gotYb += y * nb;
+      });
+    } else {
 
     /* 水晶球只能用「水晶球档」拿 */
     const cry = opts.crystals || 0;
@@ -359,46 +428,66 @@ window.SCHED = (function () {
           picks.push({ t: pickCh[i].t, n: k, crystal: true });
           c -= pickCh[i].t.gives['狂欢水晶球'] * k;
           covered += pickCh[i].t.need * k;
+          gotYb += pickCh[i].t.need * k;
         }
       }
     }
 
-    /* 其余：以 100 元宝为单位做 DP，双倍箱按 2 倍元宝算 */
+    /* 其余：以 100 元宝为单位做 DP 凑额。
+       每一档先定 A/B 路线，到账多少就按多少算，绝不叠加。 */
     const rest = Math.max(0, ybNeed - covered);
     if (rest > 0) {
+      const U2 = priceTable();
       const units = Math.ceil(rest / 100);
-      const maxU = units + 648;
+      const maxU = units + 1400;
       const dp = new Array(maxU + 1).fill(Infinity);
       dp[0] = 0;
       const chs = [];
       tabs.forEach((t) => {
-        const c = t.need / 100;
-        const y = (t.need + (t.alt ? (t.alt['绑定元宝'] || 0) : 0)) / 100;
+        const rt = pickRoute(t, demand, U2);
+        const y = rt.y / 100;
         const nd = dp.slice();
         const ch = new Array(maxU + 1).fill(0);
         for (let v = 0; v <= maxU; v++) {
           if (dp[v] === Infinity) continue;
           for (let k = 1; k <= Math.min(t.cap, Math.floor((maxU - v) / y)); k++) {
-            const nv = v + y * k, cost = dp[v] + c * k;
-            if (cost < nd[nv] - 1e-9) { nd[nv] = cost; ch[nv] = k; }
+            const nv = v + y * k, cst = dp[v] + t.need * k;
+            if (cst < nd[nv] - 1e-9) { nd[nv] = cst; ch[nv] = k; }
           }
         }
         for (let i = 0; i <= maxU; i++) dp[i] = nd[i];
-        chs.push({ t, ch });
+        chs.push({ t, rt, ch });
       });
-      let bu = units;
-      for (let v = units; v <= maxU; v++) if (dp[v] < dp[bu] - 1e-9) bu = v;
-      let v = bu;
-      for (let i = chs.length - 1; i >= 0; i--) {
-        const k = chs[i].ch[v];
-        if (k <= 0) continue;
-        const t = chs[i].t;
-        const yk = ((t.need + (t.alt ? (t.alt['绑定元宝'] || 0) : 0)) / 100) * k;
-        picks.push({ t, n: k, alt: !!t.alt });
-        v -= yk;
-        covered += yk * 100;
+      let bu = -1;
+      for (let v = units; v <= maxU; v++) {
+        if (dp[v] === Infinity) continue;
+        if (bu < 0 || dp[v] < dp[bu] - 1e-9) bu = v;
+      }
+      /* 档位总额不够覆盖需求时，退到「最大可达」，余量走直充 */
+      if (bu < 0) for (let v = maxU; v >= 0; v--) if (dp[v] < Infinity) { bu = v; break; }
+      let spentYb = 0;
+      if (bu >= 0) {
+        let v = bu;
+        for (let i = chs.length - 1; i >= 0; i--) {
+          const k = chs[i].ch[v];
+          if (k <= 0) continue;
+          const { t, rt } = chs[i];
+          picks.push({ t, n: k, alt: rt.route === 'B' });
+          v -= Math.round(rt.y / 100) * k;
+          covered += rt.y * k;
+          gotYb += rt.y * k;
+          spentYb += rt.y * k;
+        }
+      }
+      /* 直充兜底：1 元 = 100 元宝，无返利，保证任何需求都有解 */
+      if (spentYb < rest - 1e-6) {
+        const gap = rest - spentYb;
+        picks.push({ t: { need: gap, gives: {}, cap: 1, perDay: 0, direct: true }, n: 1 });
+        covered += gap; gotYb += gap;
       }
     }
+
+    } /* end else：未锁定充值组合时走凑额 DP */
 
     const merged = [];
     picks.forEach((x) => {
@@ -408,28 +497,38 @@ window.SCHED = (function () {
 
     /* 摊到天：每日档从第 1 天起一天一次（守每日限次），限次档压在前几天。
        消费日安排在活动后段（见 solveOnce 的 active），保证「钱先到、再花掉」。 */
+    /* 摊到天：每日档从第 1 天起一天一次（守每日限次）；「X 日起」的档不能提前买，
+       要从 fromDay 那天开始排；限次档压在前几天。 */
     let cursor = 0;
     merged.forEach((x) => {
       const perDay = x.t.perDay || 0;
+      const start = Math.max(0, (x.t.fromDay || 1) - 1);
       const arr = [];
       for (let k = 0; k < x.n; k++) {
-        if (perDay) { arr.push(cursor % days); cursor++; }
-        else arr.push(Math.min(k, days - 1));
+        if (perDay) { arr.push((start + cursor) % days); cursor++; }
+        else arr.push(Math.min(start + k, days - 1));
       }
       x.days = arr;
     });
 
     const money = merged.reduce((a, x) => a + x.t.need * x.n, 0) / 100;
+    /* 双倍箱二选一：走绑元就只给绑元，走道具包就只给道具，绝不叠加 */
     const gives = {};
     merged.forEach((x) => {
-      Object.keys(x.t.gives || {}).forEach((k) => { gives[k] = (gives[k] || 0) + x.t.gives[k] * x.n; });
-      if (x.alt && x.t.alt) gives['绑定元宝'] = (gives['绑定元宝'] || 0) + (x.t.alt['绑定元宝'] || 0) * x.n;
+      if (x.alt && x.t.alt) {
+        gives['绑定元宝'] = (gives['绑定元宝'] || 0) + (x.t.alt['绑定元宝'] || 0) * x.n;
+      } else {
+        Object.keys(x.t.gives || {}).forEach((k) => { gives[k] = (gives[k] || 0) + x.t.gives[k] * x.n; });
+      }
     });
-    return { picks: merged, money, yb: covered, gives };
+    return { picks: merged, money, yb: gotYb, gives };
   }
 
   /* ---------------- 七、总方案 ---------------- */
-  function solveOnce(names, opts, chargeCoupons) {
+  /* chargePool：上一轮迭代「充值实际返到的中间产物」（券 + 道具）。
+     券进券池压当日实付，道具直接回冲需求 —— 两者都必须进下一轮的算式，
+     否则就是「充值送的令只写在账本上，方案照样买满」，报价必然偏高。 */
+  function solveOnce(names, opts, chargePool) {
     opts = Object.assign({ days: P.meta.days, stock: {} }, opts || {});
     const heroSet = new Set(names || []);
     const info = needOf(names);
@@ -448,7 +547,17 @@ window.SCHED = (function () {
       unitPrice[k] = ps.length ? Math.min(...ps.map((p) => p.price / p.gives[k])) : UNIT[k];
     });
 
-    const stockCoupons = Object.assign({ 券1111: 0, 券2888: 0, 券6665: 0 }, opts.stock.coupons || {}, chargeCoupons || {});
+    const stockCoupons = Object.assign({ 券1111: 0, 券2888: 0, 券6665: 0 }, opts.stock.coupons || {});
+
+    /* 充值返到的东西拆两路：券 → 券池；道具 → 回冲需求。
+       同一 key 只走一路，避免「既当券抵扣、又当道具少买」的双算。 */
+    const backCoupons = {};
+    const backItems = {};
+    Object.keys(chargePool || {}).forEach((k) => {
+      if (P.coupons && P.coupons[k]) backCoupons[k] = chargePool[k];
+      else if (KEYS.includes(k)) backItems[k] = chargePool[k];
+    });
+    cpnKeys().forEach((k) => { stockCoupons[k] = (stockCoupons[k] || 0) + (backCoupons[k] || 0); });
 
     /* 期初存货的中间道具：灯 / 令 直接抵需求；宝玉按 1 玉 = 50 盒折成礼盒。
        存量的宝玉不产生「开盒返玉」，所以抵的是盒数而不是玉数。 */
@@ -460,11 +569,19 @@ window.SCHED = (function () {
 
     let reward = {};
     let best = null;
+    /* 每轮的候选：用的返利假设 used / 实际返到的 rw。
+       档位返利是「先假设、后兑现」，少买一点档位就掉了，容易在两轮之间来回跳。
+       所以不能只取最后一轮——要挑「假设 ≤ 实际」且最便宜的那一轮，
+       否则会拿着上一轮的返利去抵这一轮的购买量，方案最后缺几件。 */
+    const rounds = [];
 
-    for (let round = 0; round < 4; round++) {
+    for (let round = 0; round < 6; round++) {
       const need = {};
       KEYS.concat(['直购']).forEach((k) => {
-        need[k] = Math.max(0, (need0[k] || 0) - (free[k] || 0) - (reward[k] || 0) - stockOf(k));
+        /* 三层回冲，按「确定性」从高到低扣：存货 → 白送 → 档位返 → 充值返。
+           充值返最后扣，因为它的量依赖本轮算出的消费额，只有迭代才收敛。 */
+        need[k] = Math.max(0, (need0[k] || 0) - (free[k] || 0) - (reward[k] || 0)
+          - stockOf(k) - (backItems[k] || 0));
       });
 
       const comboBought = comboSweep(need, packs, unitPrice, heroSet);
@@ -494,7 +611,7 @@ window.SCHED = (function () {
           const used = dist.filter((d) => d.spend > 0);
           const tgt = (used.length ? used : dist).slice().sort((a, b) => a.spend - b.spend)[0];
           tgt.spend += directYb;
-          tgt.packs.push({ id: '__direct', name: '皮肤直售', price: directYb, direct: true });
+          tgt.packs.push({ id: '__direct', name: '直购', price: directYb, direct: true });
         }
         topUp(dist, packs, unitPrice, demandSet);
         const applied = settle(dist, couponPool);
@@ -518,14 +635,33 @@ window.SCHED = (function () {
       KEYS.forEach((k) => {
         next[k] = Math.min(pick.rw[k] || 0, Math.max(0, (need0[k] || 0) - (free[k] || 0)));
       });
+      rounds.push({ r: best, used: Object.assign({}, reward), rw: Object.assign({}, pick.rw) });
       const same = KEYS.every((k) => Math.abs((reward[k] || 0) - (next[k] || 0)) < 1e-6);
       reward = next;
       if (same) break;
     }
 
+    /* 只在「这一轮假设的档位返利，这一轮真的返到了」的候选里挑最便宜的。
+       全都不自洽（震荡）时退回全部候选，让 shortItems 把这个缺口暴露出来。
+       比较用净消费而不是 money：money 要等 chargePlan 才算得出来。 */
+    const sound = rounds.filter((c) => KEYS.every((k) => (c.used[k] || 0) <= (c.rw[k] || 0) + 1e-6));
+    const pool2 = sound.length ? sound : rounds;
+    best = pool2.reduce((a, b) => (b.r.netSpend < a.r.netSpend ? b : a)).r;
+
     const r = best;
     r.netSpend = Math.max(0, r.netSpend - (opts.stock.yb || 0));
-    r.charge = chargePlan(r.netSpend, { days: opts.days, crystals: r.need['狂欢水晶球'] || 0 });
+    r.charge = chargePlan(r.netSpend, {
+      days: opts.days,
+      crystals: r.need['狂欢水晶球'] || 0,
+      fixed: opts.lockCharge || null,
+      /* 只有「这单确实要用」的品类才算返利价值，否则赠品再贵也不顶钱 */
+      demand: new Set(KEYS.filter((k) => (need0[k] || 0) > 0)),
+    });
+    /* 锁定了充值组合时，要花的有可能超出到账元宝——不阻断，但要让上层能提示 */
+    if (opts.lockCharge && opts.lockCharge.length) {
+      r.locked = true;
+      r.overBudget = Math.max(0, r.netSpend - r.charge.yb);
+    }
 
     const produced = {};
     r.dist.forEach((d) => d.packs.forEach((p) => {
@@ -534,16 +670,36 @@ window.SCHED = (function () {
     }));
     r.produced = produced;
 
-    r.audit = KEYS.map((k) => ({
-      key: k, label: LBL[k],
-      need: need0[k] || 0,
-      stock: Math.min(stockOf(k), need0[k] || 0),
-      free: free[k] || 0,
-      tier: r.tierReward[k] || 0,
-      buy: produced[k] || 0,
-      total: Math.min(stockOf(k), need0[k] || 0) + (free[k] || 0) + (r.tierReward[k] || 0) + (produced[k] || 0),
-    })).filter((x) => x.need > 0);
+    /* 充值返利也是来源之一：水晶球只从充值档送，实际买不到，
+       不把它算进「已有」就会把整单误判成「本期买不到」 */
+    const cGives = (r.charge && r.charge.gives) || {};
+    r.audit = KEYS.map((k) => {
+      const stockUse = Math.min(stockOf(k), need0[k] || 0);
+      /* 充值送的量只有「前面几层还不够」的部分才真正顶用，超出的不算 */
+      const room = Math.max(0, (need0[k] || 0) - stockUse - (free[k] || 0) - (r.tierReward[k] || 0));
+      const chg = Math.min(cGives[k] || 0, room);
+      return {
+        key: k, label: LBL[k],
+        need: need0[k] || 0,
+        stock: stockUse,
+        free: free[k] || 0,
+        tier: r.tierReward[k] || 0,
+        charge: chg,
+        buy: produced[k] || 0,
+        total: stockUse + (free[k] || 0) + (r.tierReward[k] || 0) + chg + (produced[k] || 0),
+      };
+    }).filter((x) => x.need > 0);
+    /* 本轮假设的充值返利量 vs 实际量：假设不能超过实际，否则核对表会「凑数」。
+       券走同一套口径：用掉的券不能超过「期初 + 每日档返 + 充值返」。 */
+    r.chargeBack = Object.assign({}, backItems);
+    const couponOk = cpnKeys().every((k) => ((r.coupons || {})[k] || 0)
+      <= (((opts.stock.coupons || {})[k]) || 0) + (r.tierReward[k] || 0) + (cGives[k] || 0) + 1e-6);
+    r.chargeBackOk = couponOk && KEYS.every((k) => (backItems[k] || 0) <= (cGives[k] || 0) + 1e-6);
     r.stockUsed = r.audit.reduce((a, x) => a + x.stock, 0);
+    /* 逐项缺口：哪个道具还差多少（比笼统说「无法报价」有用） */
+    r.shortItems = r.audit
+      .filter((x) => x.total < x.need - 1e-6)
+      .map((x) => ({ key: x.key, label: x.label, lack: x.need - x.total, need: x.need, total: x.total }));
 
     r.extras = KEYS.map((k) => ({
       key: k, label: LBL[k], qty: (free[k] || 0) + (r.tierReward[k] || 0) + (produced[k] || 0),
@@ -551,21 +707,53 @@ window.SCHED = (function () {
 
     r.ok = r.audit.every((x) => x.total >= x.need - 1e-6);
     r.money = r.charge.money;
+    /* 本期没有购买渠道、只能靠活动白送的品类（换期常见：某期没有珍宝礼盒） */
+    const cat = catalog();
+    r.unbuyable = KEYS
+      .filter((k) => (r.need[k] || 0) - (cGives[k] || 0) > 1e-6
+        && !cat.some((p) => p.gives && p.gives[k] > 0))
+      .map((k) => ({
+        key: k, label: LBL[k],
+        need: Math.max(0, (r.need[k] || 0) - (cGives[k] || 0)),
+      }));
+    /* 目标本身找不到任何渠道（签筒 / 砸蛋 / 绘卷这类未建模玩法）：
+       不能静默算成 0 元，必须让上层显示「无法报价」 */
+    r.pick = info.pick;
+    r.noRoute = info.pick.filter((p) => !p.kind).map((p) => p.name);
+    r.priced = info.pick.filter((p) => p.kind).length;
     return r;
   }
 
-  /* 外层：充值返的券会再压低成本，迭代两次 */
+  /* 外层：把上一轮「充值实际返到的中间产物」喂回去重算，直到稳定。
+     两条反馈线：
+       ① 券      → 券池（压低当日实付 → 少充钱）
+       ② 道具    → 回冲需求（少买 → 少花 → 再少充）
+     收敛用「只减不增」：下一轮假设取 min(上一轮假设, 本轮实际)，
+     这样假设永远不会超过实际，核对表不会靠假设凑数。
+     最后只接受「假设 ≤ 实际」的自洽解，并在自洽解里取最便宜的那个。 */
   function build(names, opts) {
-    let cc = { 券1111: 0, 券2888: 0, 券6665: 0 };
-    let r = solveOnce(names, opts, cc);
-    for (let i = 0; i < 3; i++) {
-      const g = r.charge.gives || {};
-      const next = { 券1111: g['券1111'] || 0, 券2888: g['券2888'] || 0, 券6665: g['券6665'] || 0 };
-      if (next.券1111 === cc.券1111 && next.券2888 === cc.券2888 && next.券6665 === cc.券6665) break;
-      cc = next;
-      r = solveOnce(names, opts, cc);
+    const allKeys = cpnKeys().concat(KEYS);
+    const cands = [];
+    let pool = {};
+    for (let i = 0; i < 8; i++) {
+      const r = solveOnce(names, opts, pool);
+      cands.push({ r, pool: Object.assign({}, pool) });
+      const g = (r.charge && r.charge.gives) || {};
+      const next = {};
+      let same = true;
+      allKeys.forEach((k) => {
+        const prev = pool[k] == null ? Infinity : pool[k];
+        const v = Math.min(prev, g[k] || 0);
+        next[k] = v;
+        if (Math.abs((pool[k] || 0) - v) > 1e-6) same = false;
+        else if (pool[k] == null && v > 0) same = false;
+      });
+      if (same) break;
+      pool = next;
     }
-    return r;
+    const good = cands.filter((c) => c.r.chargeBackOk);
+    const pool2 = good.length ? good : cands;
+    return pool2.reduce((a, b) => (b.r.money < a.r.money - 1e-9 ? b : a)).r;
   }
 
   /* 逐日行：给 UI 用 */
@@ -578,7 +766,7 @@ window.SCHED = (function () {
       out.push({
         i, day: i + 1,
         charges: charges.map((p) => ({
-          label: fmt(p.t.need) + (p.crystal ? '（水晶球档）' : p.alt ? '（双倍箱）' : ''),
+          label: fmt(p.t.need) + (p.crystal ? '（水晶球档）' : p.alt ? '（换绑元）' : ''),
           money: p.t.need / 100,
         })),
         spend: d.net, gross: d.spend,
@@ -590,14 +778,21 @@ window.SCHED = (function () {
   }
 
   /* ---------------- 八、过程产出账本 ---------------- */
-  const CPN = { 券6665: '抵价券6665', 券2888: '抵价券2888', 券1111: '抵价券1111' };
-  const CPN_KEYS = ['券6665', '券2888', '券1111'];
+  /* 券名跟着 P.coupons 走：每期面额不同（1111/2888/6665 → 2500/1000） */
+  const CPN = new Proxy({}, { get: (_, k) => (P.coupons && P.coupons[k] && P.coupons[k].name) || String(k) });
+  const CPN_KEYS = {
+    get length() { return cpnKeys().length; },
+    map: (f) => cpnKeys().map(f),
+    forEach: (f) => cpnKeys().forEach(f),
+    filter: (f) => cpnKeys().filter(f),
+    indexOf: (k) => cpnKeys().indexOf(k),
+  };
 
   /* 抵价券流水：获得（期初 + 每日档位 + 充值档位）= 用掉 + 结余
      结余不再记「沉没」：默认拿去单买灯 / 玉（见 leftoverPlan），券面额是能落地的。 */
   function ledger(r, stock) {
     const st = (stock && stock.coupons) || {};
-    const rows = CPN_KEYS.map((k) => {
+    const rows = cpnKeys().map((k) => {
       const def = P.coupons[k] || { face: 0, min: 0, name: k };
       const init = st[k] || 0;
       const daily = (r.tierReward && r.tierReward[k]) || 0;
@@ -778,7 +973,7 @@ window.SCHED = (function () {
 
   return {
     build, rows, needOf, catalog, reset, tierOf, knotLamps, LBL, KEYS, UNIT,
-    ledger, condRows, freeRows, CPN, CPN_KEYS, STATE_TXT,
+    ledger, condRows, freeRows, CPN, CPN_KEYS, cpnKeys, STATE_TXT,
     SINGLES, singleCost, leftoverPlan,
   };
 })();

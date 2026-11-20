@@ -9,6 +9,10 @@
     q: '', cat: '全部', way: '全部', selected: new Set(), lib: null,
     pin: {}, ctx: null, plan: null, daily: null, pendingImport: null,
     targets: null, tmap: null, rate: null, min: null,
+    /* 充值分析：视图（table/pick）、当前方案、勾选的武将 */
+    rateView: 'table', pickPlan: null, pickSel: null, comboSel: {},
+    /* 锁定充值组合：从「先选充值」进来时，方案不再自己算充值 */
+    lockCharge: null,
   };
 
   /* 路线缓存：同一套参数下不重复计算 */
@@ -306,14 +310,41 @@
   /* ---------- 每日方案 ---------- */
   const CN = { 盒: '礼盒', 祈福灯: '祈福灯', 纳贤令: '纳贤令', 锦绣: '锦绣', 狂欢夺宝券: '夺宝券', 狂欢水晶球: '水晶球',
     券1111: '抵价券1111', 券2888: '抵价券2888', 券6665: '抵价券6665', 绑定元宝: '绑定元宝' };
+  /* 券名跟着本期 P.coupons 走，不再写死 1111/2888/6665 */
   const COUPON_NAME = { 券1111: '抵价券1111', 券2888: '抵价券2888', 券6665: '抵价券6665' };
+  const cpnLabel = (k) => {
+    const c = (P.coupons || {})[k];
+    return c && c.face ? '抵价券' + c.face : (COUPON_NAME[k] || CN[k] || k);
+  };
+  const cpnShort = (k) => {
+    const c = (P.coupons || {})[k];
+    return c && c.face ? c.face + '券' : (k.replace(/^券/, '') + '券');
+  };
+
+  /* ---------- 抵价券存货输入（券种跟着本期 P.coupons 走） ---------- */
+  function renderCouponStock() {
+    const box = document.getElementById('couponStock');
+    if (!box) return;
+    const keys = Object.keys(P.coupons || {}).sort((a, b) => (P.coupons[b].face || 0) - (P.coupons[a].face || 0));
+    if (!keys.length) {
+      box.innerHTML = '<div class="hint" style="grid-column:1/-1">本期公告未出现抵价券</div>';
+      return;
+    }
+    box.innerHTML = keys.map((k) => {
+      const c = P.coupons[k];
+      return `<label title="抵价券 ${c.min}-${c.face}">${c.face}<input type="number" id="sC_${k}" value="0" min="0"></label>`;
+    }).join('');
+    box.querySelectorAll('input').forEach((el) => el.addEventListener('change', recalc));
+  }
 
   function readStock() {
     const g = (id) => { const el = document.querySelector(id); return el ? Math.max(0, +el.value || 0) : 0; };
+    const coupons = {};
+    Object.keys(P.coupons || {}).forEach((k) => { coupons[k] = g('#sC_' + k); });
     return {
       yb: g('#sYb'),
       items: { 宝玉: g('#sJade'), 祈福灯: g('#sLamp'), 纳贤令: g('#sNana') },
-      coupons: { 券1111: g('#sC1'), 券2888: g('#sC2'), 券6665: g('#sC3') },
+      coupons,
     };
   }
 
@@ -333,7 +364,7 @@
   }
 
   function rewardText(t) {
-    return Object.keys(t || {}).map((k) => `${COUPON_NAME[k] || CN[k] || k}×${E.fmt(t[k])}`).join(' · ');
+    return Object.keys(t || {}).map((k) => `${cpnLabel(k)}×${E.fmt(t[k])}`).join(' · ');
   }
 
   function renderPlan() {
@@ -349,23 +380,66 @@
       renderSplit([]);
       return;
     }
-    const r = SCHED.build(names, { days: state.ctx.days, stock: readStock() });
+    const r = SCHED.build(names, {
+      days: state.ctx.days,
+      stock: readStock(),
+      lockCharge: state.lockCharge || null,
+    });
     state.daily = r;
 
     const left = r.charge.yb - r.netSpend;
-    sub.textContent = `${names.length} 个目标 · ` + r.audit.map((a) => a.label + ' ' + E.fmt(a.need)).join(' / ');
+    const noRoute = r.noRoute || [];
+    const unb = r.unbuyable || [];
+    /* 报价不完整：要么目标本身没渠道，要么需求的道具本期买不到 */
+    const broken = (noRoute.length > 0 && !r.priced) || unb.length > 0;
+    sub.textContent = `${names.length} 个目标 · ` + r.audit.map((a) => a.label + ' ' + E.fmt(a.need)).join(' / ')
+      + (noRoute.length ? ` · ${noRoute.length} 个目标无渠道` : '');
+
+    const priceHtml = broken
+      ? `<div class="v" style="color:var(--ink-3)">无法报价</div>
+         <div class="k" style="margin-top:2px">${unb.length ? unb.map((u) => u.label + ' 本期买不到').join('、')
+           : `${noRoute.length} 个目标本期无购买渠道`}</div>`
+      : `<div class="v">¥${E.fmt(r.money)}</div>
+         <div class="k" style="margin-top:2px">到账 ${E.fmt(r.charge.yb)} 元宝</div>`;
+
+    const warns = [];
+    if (noRoute.length) {
+      warns.push(`未计入报价：${noRoute.join('、')}<span>只能靠签筒 / 砸蛋 / 绘卷等未建模玩法产出</span>`);
+    }
+    if (unb.length) {
+      warns.push(`本期买不到：${unb.map((u) => `${u.label} 需 ${E.fmt(u.need)}`).join('、')}<span>需求存在但没有购买渠道，金额不可信</span>`);
+    }
+    const short = (r.shortItems || []).filter((x) => !unb.some((u) => u.key === x.key));
+    if (short.length) {
+      warns.push(`还差：${short.map((x) => `${x.label} ${E.fmt(Math.round(x.lack))}`).join('、')}
+        <span>${state.lockCharge ? '这组充值给的不够，加档位或去掉目标' : '当前渠道凑不齐，考虑换路线或加预算'}</span>`);
+    }
+    /* 充值被锁定：说明钱是按你选的那组充的，以及够不够花 */
+    let lockHtml = '';
+    if (state.lockCharge && state.lockCharge.length) {
+      const over = r.overBudget || 0;
+      lockHtml = `<div class="lockbar${over > 1 ? ' bad' : ''}">
+        <span>${over > 1
+          ? `充值已锁定，但还差 <b>${E.fmt(Math.round(over))}</b> 元宝才够买这些——再加一档，或去掉一个目标`
+          : `充值已锁定为这一组，到账 ${E.fmt(r.charge.yb)} 元宝，够花`}</span>
+        <button class="btn sm ghost" id="unlockCharge">解除锁定</button>
+      </div>`;
+    }
 
     $('#totals').innerHTML = `
       <div class="tot hl">
         <div class="k">需要充值</div>
-        <div class="v">¥${E.fmt(r.money)}</div>
-        <div class="k" style="margin-top:2px">到账 ${E.fmt(r.charge.yb)} 元宝</div>
+        ${priceHtml}
       </div>
       <div class="tot">
         <div class="k">实付元宝</div>
         <div class="v">${money(r.netSpend)}</div>
         <div class="k" style="margin-top:2px">券抵 ${E.fmt(r.couponSave)}${left > 1 ? ` · 余 ${money(left)}` : ''}</div>
-      </div>`;
+      </div>
+      ${lockHtml}
+      ${warns.map((w) => `<div class="noroute">${w}</div>`).join('')}`;
+    const ul = document.getElementById('unlockCharge');
+    if (ul) ul.onclick = () => { state.lockCharge = null; renderPlan(); };
 
     renderSplit(names);
     renderOutput(r, names);
@@ -386,15 +460,19 @@
       el.innerHTML = `
         <div class="dh">
           <span class="dt">${dateOf(row.i)}</span>
-          ${chg ? `<span class="dchg">充值 ${chg}</span>` : ''}
-          <span class="dsp">消费 <b>${E.fmt(row.spend)}</b></span>
+          <span class="dchg">${chg ? '充值 ' + chg : ''}</span>
+          <span class="dsp"><span class="dsp-k">消费</span><b>${E.fmt(row.spend)}</b></span>
         </div>
         <div class="dp">${pk.length ? pk.join('　·　') : '—'}</div>
         ${disc > 1 ? `<div class="ddisc">抵价券 −${E.fmt(disc)}</div>` : ''}
         ${rw ? `<div class="drw">领 ${rw}</div>` : ''}`;
       list.appendChild(el);
     });
-    if (!any) list.innerHTML = '<div class="empty" style="padding:20px 0">本期白送的就够了，不用消费</div>';
+    if (!any) {
+      list.innerHTML = broken
+        ? '<div class="empty" style="padding:20px 0">本期无法报价：所需道具在本期买不到，见上方提示</div>'
+        : '<div class="empty" style="padding:20px 0">本期白送的就够了，不用消费</div>';
+    }
 
     const aud = r.audit.map((a) => `<tr>
         <td>${a.label}</td>
@@ -402,13 +480,14 @@
         <td class="num">${a.stock ? E.fmt(a.stock) : '—'}</td>
         <td class="num">${a.free ? E.fmt(a.free) : '—'}</td>
         <td class="num">${a.tier ? E.fmt(a.tier) : '—'}</td>
+        <td class="num">${a.charge ? E.fmt(a.charge) : '—'}</td>
         <td class="num">${E.fmt(a.buy)}</td>
         <td class="num ${a.total >= a.need ? 'ok' : 'bad'}">${E.fmt(a.total)}</td>
       </tr>`).join('');
     $('#auditBox').innerHTML = `
       <h3>核对</h3>
       <table class="mini-table">
-        <thead><tr><th>道具</th><th class="num">需要</th><th class="num">期初</th><th class="num">白送</th><th class="num">档位</th><th class="num">要买</th><th class="num">合计</th></tr></thead>
+        <thead><tr><th>道具</th><th class="num">需要</th><th class="num">期初</th><th class="num">白送</th><th class="num">档位</th><th class="num">充值</th><th class="num">要买</th><th class="num">合计</th></tr></thead>
         <tbody>${aud}</tbody>
       </table>
       ${r.audit.some((a) => a.stock) ? `<p class="hint">期初存货已抵扣：${r.audit.filter((a) => a.stock).map((a) => `${a.label} ${E.fmt(a.stock)}`).join(' · ')}</p>` : ''}
@@ -459,7 +538,7 @@
 
     /* 2.1 抵价券流水 */
     const cpnRows = led.rows.map((x) => `<tr class="${x.got ? '' : 'dim'}">
-      <td class="cpn-name" title="满 ${E.fmt(x.min)} 减 ${E.fmt(x.face)}">${CPN_LBL[x.key] || x.key}</td>
+      <td class="cpn-name" title="满 ${E.fmt(x.min)} 减 ${E.fmt(x.face)}">${cpnShort(x.key)}</td>
       <td>${x.got || 0}</td>
       <td>${x.used || 0}</td>
       <td class="${x.left ? 'bad' : ''}">${x.left || 0}</td>
@@ -517,7 +596,8 @@
       const flag = row.spend > 0 && !row.packs.length ? '' : '';
       return `<tr>
         <td>${dateOf(row.i)}</td>
-        <td class="num">${chg}</td>
+        <td class="chg">${chg}</td>
+        <td class="num">${row.charges.length ? E.fmt(row.charges.reduce((a, c) => a + c.money, 0)) : '—'}</td>
         <td class="num">${E.fmt(row.spend)}</td>
         <td>${groupPacks(row.packs).join('　·　') || '—'}</td>
         <td>${rewardText(row.tier) || '—'}</td>
@@ -530,22 +610,23 @@
         <td class="num">${a.stock ? E.fmt(a.stock) : '—'}</td>
         <td class="num">${a.free ? E.fmt(a.free) : '—'}</td>
         <td class="num">${a.tier ? E.fmt(a.tier) : '—'}</td>
+        <td class="num">${a.charge ? E.fmt(a.charge) : '—'}</td>
         <td class="num">${E.fmt(a.buy)}</td>
         <td class="num ${a.total >= a.need ? 'ok' : 'bad'}">${E.fmt(a.total)}</td>
       </tr>`).join('');
 
-    const chgList = r.charge.picks.map((p) => `${p.t.need / 100}元×${p.n}${p.crystal ? '(水晶球档)' : p.alt ? '(双倍箱)' : ''}`).join(' + ');
+    const chgList = r.charge.picks.map((p) => `${p.t.need / 100}元×${p.n}${p.crystal ? '(水晶球档)' : p.alt ? '(换绑元)' : ''}`).join(' + ');
 
     $('#dayTitle').textContent = `每日消费方案 · ${[...state.selected].join(' + ')}`;
     $('#dayBody').innerHTML = `
-      <table class="plan-table">
-        <thead><tr><th>日期</th><th class="num">充值</th><th class="num">当日消费</th><th>买到什么</th><th>当天领奖</th></tr></thead>
+      <table class="plan-table day-plan">
+        <thead><tr><th>日期</th><th>充值档位</th><th class="num">充值合计</th><th class="num">当日消费</th><th>买到什么</th><th>当天领奖</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
       <div class="audit-block">
         <h3>核对</h3>
-        <table class="plan-table">
-          <thead><tr><th>道具</th><th class="num">需要</th><th class="num">期初</th><th class="num">白送</th><th class="num">档位返</th><th class="num">要买</th><th class="num">合计</th></tr></thead>
+        <table class="plan-table aud-plan">
+          <thead><tr><th>道具</th><th class="num">需要</th><th class="num">期初</th><th class="num">白送</th><th class="num">档位返</th><th class="num">充值</th><th class="num">要买</th><th class="num">合计</th></tr></thead>
           <tbody>${aud}</tbody>
         </table>
       </div>
@@ -586,149 +667,405 @@
     });
   }
 
-  /* ---------- 充值倍率表 ---------- */
+  /* ---------- 充值分析（先定充值，再挑武将） ---------- */
+  let planCache = null;
+
+  function planLabel(picks) {
+    return picks.map((p) => {
+      const t = p.tier;
+      const suf = t.tag === '首日' ? '·首' : (/11\/8|第\d天起/.test(t.tag) ? '·后' : '');
+      return `¥${E.fmt(t.rmb)}${suf}${p.n > 1 ? '×' + p.n : ''}`;
+    }).join(' + ');
+  }
+
+  /* 方案库：一次枚举出各金额段的最优，再按预算档挑代表。
+     枚举 7 万量级要几百毫秒，所以按天数缓存，别每次开弹窗都算。 */
+  function getPlans(days) {
+    if (planCache && planCache.days === days) return planCache.list;
+    const out = [];
+    const seen = new Set();
+    const add = (tag, picks) => {
+      if (!picks || !picks.length) return;
+      const c = RATES.combo(picks, days);
+      if (!c.cost) return;
+      const sig = c.picks.map((p) => p.tier.i + 'x' + p.n).sort().join('+');
+      if (seen.has(sig)) return;
+      seen.add(sig);
+      out.push({
+        tag, c, bd: RATES.breakdown(c, days), label: planLabel(c.picks),
+        picks: c.picks.map((p) => ({ i: p.tier.i, n: p.n })),
+      });
+    };
+
+    const maxBudget = Math.max(200, (P.chargeTiers || []).reduce((a, t) => {
+      const cap = t.total > 0 ? t.total : (t.perDay ? t.perDay * days : 1);
+      return a + (t.need / 100) * cap;
+    }, 0));
+
+    let pool = [];
+    try { pool = RATES.bestMix(days, maxBudget, 260, { minShare: 0 }); } catch (e) { pool = []; }
+    [100, 300, 600, 1000, 2000, 4000].forEach((b) => {
+      if (b > maxBudget) return;
+      const cand = pool
+        .filter((x) => x.combo.money <= b * 1.02 && x.combo.money >= b * 0.7)
+        .sort((x, y) => y.e2e.ratio - x.e2e.ratio)[0];
+      if (cand) add('推荐', cand.combo.picks.map((p) => ({ i: p.tier.i, n: p.n })));
+    });
+    const full = RATES.fullMix(days);
+    add('全买满', full.combo.picks.map((p) => ({ i: p.tier.i, n: p.n })));
+    RATES.tierList(days).forEach((t) => { if (t.cap > 0) add('单档', [{ i: t.i, n: 1 }]); });
+
+    planCache = { days, list: out };
+    return out;
+  }
+
+  function bdYbTotal(bd) {
+    return bd.b.tong + bd.b.bang + bd.b.hongbao;
+  }
+
   function renderRates() {
-    const days = state.ctx.days;
+    if (state.rateView === 'pick') return renderPicker();
+    state.rateView = 'table';
     state.comboSel = state.comboSel || {};
-    const tiers = RATES.tierList(days).slice().sort((a, b) => a.need - b.need);
-    const maxRatio = Math.max(...tiers.map((t) => t.ratio));
-    const body = tiers.map((t) => {
-      const reb = t.reb.length
-        ? t.reb.map((x) => `${CN[x.k] || x.k}×${E.fmt(x.q)}`).join(' + ')
-        : '<span style="color:var(--ink-3)">无</span>';
-      const ybCell = t.altBind
-        ? `${E.fmt(t.need)} <span class="sub">+绑元 ${E.fmt(t.altBind)}</span>`
-        : E.fmt(t.yb);
-      const w = Math.max(3, Math.round((t.ratio / maxRatio) * 46));
-      const on = !!state.comboSel[t.i];
-      return `<tr class="${on ? 'picked' : ''}">
-        <td class="ckcell"><input type="checkbox" class="ckT" data-i="${t.i}" data-need="${t.need}" ${on ? 'checked' : ''}></td>
-        <td><b>¥${E.fmt(t.rmb)}</b><div class="sub" style="font-size:9.4px">${t.tag}</div></td>
-        <td class="num">${ybCell}</td>
-        <td>${reb}</td>
-        <td class="num">${E.fmt(Math.round(t.rebVal))}</td>
-        <td class="num"><b>${E.fmt(Math.round(t.total))}</b></td>
-        <td class="num"><span class="cheap">${t.ratio.toFixed(2)}×</span> <span class="bar" style="width:${w}px"></span></td>
-        <td class="num">${t.cap}</td>
-        <td><span class="sub">${t.cond}</span></td>
+    const days = state.ctx.days;
+    const plans = getPlans(days);
+    const full = RATES.fullMix(days);
+    const bestOne = plans.slice().sort((a, b) => b.bd.ratioAll - a.bd.ratioAll)[0];
+
+    const head = RATES.COLS.map((c) => `<th class="num" title="${c.hint}">${c.name}</th>`).join('');
+
+    const rows = plans.map((p, i) => {
+      const bd = p.bd;
+      const ybTotal = bdYbTotal(bd);
+      const e2e = RATES.endToEnd(p.c, days);
+      const cells = RATES.COLS.map((c) => {
+        const v = bd.b[c.key];
+        return `<td class="num${v > 0 ? '' : ' zero'}">${v > 0 ? E.fmt(Math.round(v)) : '—'}</td>`;
+      }).join('');
+      return `<tr>
+        <td class="planname">${p.label}<span class="tagline ${p.tag === '推荐' ? '' : 'gold'}">${p.tag}</span></td>
+        <td class="num"><b>¥${E.fmt(p.c.money)}</b></td>
+        <td class="num"><b>${E.fmt(Math.round(ybTotal))}</b></td>
+        ${cells}
+        <td class="num ratio">${bd.ratioAll.toFixed(2)}×</td>
+        <td class="num ratio sub2">${bd.ratioNo15.toFixed(2)}×</td>
+        <td class="num ratio sub2">${bd.ratioNoNaxian.toFixed(2)}×</td>
+        <td class="num e2e" title="充值返利 + 消费返利都算上">${e2e.ratio.toFixed(2)}×</td>
+        <td class="num"><button class="btn sm ghost pickbtn" data-i="${i}">选将 →</button></td>
       </tr>`;
     }).join('');
 
-    const rankRows = RATES.rank(days).map((t) => `<div class="combo-row">
-      <span class="rtag ${t.place === 1 ? 'a' : t.place <= 3 ? 'g' : ''}">${t.place}</span>
-      <b>¥${E.fmt(t.rmb)}</b>
-      <span class="sub">到账 ${E.fmt(t.yb)} · 返利 ${E.fmt(Math.round(t.rebVal))}</span>
-      <span style="margin-left:auto"><b>${t.ratio.toFixed(2)}×</b>${t.badge ? ` <span class="tagline ${t.place === 1 ? '' : 'gold'}">${t.badge}</span>` : ''}</span>
-    </div>`).join('');
+    const tiers = RATES.tierList(days).slice().sort((a, b) => a.need - b.need);
+    const chips = tiers.map((t) => {
+      const on = state.comboSel[t.i];
+      const tip = [t.cond, t.altText].filter(Boolean).join(' · ');
+      return `<label class="tchip${on ? ' on' : ''}" data-i="${t.i}" title="${tip}">
+        <input type="checkbox" class="ckT" data-i="${t.i}" ${on ? 'checked' : ''}>
+        <b>¥${E.fmt(t.rmb)}</b><i>${t.tag}</i>
+        <input type="number" class="nT" data-i="${t.i}" min="1" max="${t.cap}" value="${on || 1}" ${on ? '' : 'disabled'}>
+        <s>/${t.cap}</s>
+      </label>`;
+    }).join('');
 
-    const foot = RATES.NOTE.map((n) => `<div>· ${n}</div>`).join('');
-
-    const quick = (size) => RATES.bestCombos(days, size, size === 2 ? 4 : 3).map((r) =>
-      `<button class="qcombo" data-picks="${r.ikey}">${r.picks.map((p) => `¥${E.fmt(p.tier.rmb)}<i>${p.tier.tag}</i>`).join('+')}<b>${r.ratio.toFixed(2)}×</b></button>`
-    ).join('');
+    /* 本期充值到底返不返「15-1 / 纳贤令」——不返的话三档倍率必然一样，
+       与其让用户以为是 bug，不如直接说明白 */
+    const noSpecial = plans.every((p) => p.bd.b.sel15 === 0 && p.bd.b.naxian === 0);
+    const hintText = noSpecial
+      ? '本期充值不返 15-1 / 纳贤令，三档倍率一致；换个有纳贤返利的期就会分开'
+      : '倍率高 ≠ 一定值：要看这些产出对不对得上你要的武将';
 
     $('#rateBody').innerHTML = `
-      <table>
-        <thead><tr>
-          <th class="ckcell">选</th>
-          <th>档位(元)</th><th class="num">元宝(到账)</th><th>返利道具</th><th class="num">返利折算</th>
-          <th class="num">合计价值</th><th class="num">倍率</th><th class="num">可买次数</th><th>触发条件</th>
-        </tr></thead>
-        <tbody>${body}</tbody>
+      <div class="rate-kpis">
+        <div class="kpi"><span>最优单档</span><b>${bestOne ? `¥${E.fmt(bestOne.c.money)} · ${bestOne.bd.ratioAll.toFixed(2)}×` : '—'}</b></div>
+        <div class="kpi"><span>全买满</span><b>¥${E.fmt(full.combo.money)} · ${full.e2e.ratio.toFixed(2)}×</b></div>
+        <div class="kpi"><span>方案</span><b>${plans.length} 组</b></div>
+        <div class="kpi hint">${hintText}</div>
+      </div>
+
+      <table class="ana-table">
+        <thead>
+          <tr>
+            <th>充值方案</th><th class="num">金额</th><th class="num" title="能直接花的元宝">总元宝</th>
+            ${head}
+            <th class="num" title="产出全部算数">拿15-1</th>
+            <th class="num" title="目标不在 15 选 1 名单里">拿非15-1</th>
+            <th class="num" title="根本不练纳贤将">不拿纳贤</th>
+            <th class="num" title="充值返利 + 消费返利都算上">含消费</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
       </table>
-      <div class="rate-foot">${foot}</div>
+      <div class="rate-foot">
+        ${RATES.notes().map((n) => `<div>· ${n}</div>`).join('')}
+        <div>· 三档倍率只差在「产出算不算数」：<b>拿 15-1</b> 全算；<b>拿非 15-1</b> 扣掉 15-1 类产出；<b>不拿纳贤</b> 连纳贤令也不算。</div>
+      </div>
 
       <div class="rate-sec">
-        <h3>组合倍率 <em>勾几档一起充，算整体倍率（¥12 + ¥6 这种）</em></h3>
+        <h3>自己配 <em>勾档位、填次数（同档可以多次），看这一组拆出什么</em></h3>
+        <div class="tier-chips">${chips}</div>
         <div id="comboOut"></div>
-        <div class="quickline"><span>双档最快</span>${quick(2)}</div>
-        <div class="quickline"><span>三档最快</span>${quick(3)}</div>
       </div>
 
       <div class="rate-sec">
-        <h3>性价比排行 <em>单档倍率从高到低；「首充档」只买一次，「每日必买档」每天一次</em></h3>
-        ${rankRows}
-      </div>
-
-      <div class="rate-sec">
-        <h3>凑额推荐 <em>给定要花掉的量，DP 求最少人民币（328 / 648 已按 11/8 重置算 0~2 次）</em></h3>
+        <h3>凑额推荐 <em>给定要花掉的量，DP 求最少人民币（含双倍箱绑元路线）</em></h3>
         <div class="min-form" style="border:0;padding-bottom:8px">
           <label style="font-size:11.5px;color:var(--ink-2)">我要花掉</label>
           <input type="number" id="dpX" min="1" step="1000" value="300000">
           <select id="dpUnit"><option value="yb">元宝</option><option value="rmb">人民币(元)</option></select>
           <button class="btn sm" id="btnDp">算组合</button>
-          <span class="hintline">按到账元宝覆盖目标；双倍箱一律按绑元计（保证「能花」，不折水晶球）。</span>
+          <span class="hintline">按可花元宝覆盖目标，双倍箱优先按绑元算（拿得更多）。</span>
         </div>
         <div id="dpOut"></div>
       </div>`;
 
     $('#btnDp').onclick = () => renderDp();
     $('#dpX').onkeydown = (e) => { if (e.key === 'Enter') renderDp(); };
+
     $('#rateBody').querySelectorAll('.ckT').forEach((el) => {
       el.onchange = () => {
         const i = +el.dataset.i;
-        if (el.checked) state.comboSel[i] = 1; else delete state.comboSel[i];
-        syncComboRows();
+        const nEl = $('#rateBody').querySelector(`.nT[data-i="${i}"]`);
+        if (el.checked) {
+          const n = Math.max(1, Math.min(+nEl.value || 1, +nEl.max || 1));
+          state.comboSel[i] = n;
+          nEl.value = n;
+          nEl.disabled = false;
+        } else {
+          delete state.comboSel[i];
+          nEl.disabled = true;
+        }
+        el.closest('.tchip').classList.toggle('on', el.checked);
         renderCombo();
       };
     });
-    $('#rateBody').querySelectorAll('.qcombo').forEach((el) => {
-      el.onclick = () => {
-        state.comboSel = {};
-        el.dataset.picks.split('+').forEach((s) => {
-          const [i, n] = s.split('x').map(Number);
-          if (i != null) state.comboSel[i] = n || 1;
-        });
-        syncComboRows();
-        renderCombo();
+    $('#rateBody').querySelectorAll('.nT').forEach((el) => {
+      el.onchange = () => {
+        const i = +el.dataset.i;
+        const n = Math.max(1, Math.min(+el.value || 1, +el.max || 1));
+        el.value = n;
+        if (state.comboSel[i] != null) { state.comboSel[i] = n; renderCombo(); }
       };
     });
+    $('#rateBody').querySelectorAll('.pickbtn').forEach((el) => {
+      el.onclick = () => openPicker(plans[+el.dataset.i]);
+    });
+
     renderDp();
     renderCombo();
   }
 
-  function syncComboRows() {
-    const body = $('#rateBody');
-    if (!body) return;
-    body.querySelectorAll('.ckT').forEach((el) => {
-      const on = !!state.comboSel[+el.dataset.i];
-      el.checked = on;
-      const tr = el.closest('tr');
-      if (tr) tr.classList.toggle('picked', on);
-    });
-  }
-
+  /* 勾选的档位 → 拆解 + 三档倍率 */
   function renderCombo() {
     const out = document.getElementById('comboOut');
     if (!out) return;
     const days = state.ctx.days;
     const list = Object.keys(state.comboSel || {}).map((k) => ({ i: +k, n: state.comboSel[k] }));
-    const r = RATES.combo(list, days);
-    if (!r.picks.length) {
-      out.innerHTML = '<div class="hintline">在上面表格勾档位（可多选），或点下面的快捷组合。组合倍率 = 合计价值 ÷ 本金，是各档按本金加权后的平均。</div>';
+    const c = RATES.combo(list, days);
+    if (!c.picks.length) {
+      out.innerHTML = '<div class="hintline">勾上面的档位（同档可填次数），或直接用表格里的方案。</div>';
       return;
     }
-    const rows = r.picks.map((p) => `<span class="combopick">¥${E.fmt(p.tier.rmb)}<s>${p.tier.tag}</s><i>×${p.n}</i><em>${p.tier.ratio.toFixed(2)}×</em></span>`).join('<span class="plus">+</span>');
-    const hi = r.picks.reduce((a, p) => (p.tier.ratio > a.tier.ratio ? p : a), r.picks[0]);
-    const lo = r.picks.reduce((a, p) => (p.tier.ratio < a.tier.ratio ? p : a), r.picks[0]);
-    const drag = r.picks.length > 1 && lo.tier.need !== hi.tier.need;
+    const bd = RATES.breakdown(c, days);
+    const ybTotal = bdYbTotal(bd);
+    const cols = RATES.COLS.filter((col) => bd.b[col.key] > 0)
+      .map((col) => `<div><span class="k">${col.name}</span><b>${E.fmt(Math.round(bd.b[col.key]))}</b></div>`).join('');
     out.innerHTML = `
-      <div class="combo-line">${rows}
+      <div class="combo-line">
+        ${c.picks.map((p) => `<span class="combopick">¥${E.fmt(p.tier.rmb)}<s>${p.tier.tag}</s><i>×${p.n}</i></span>`).join('<span class="plus">+</span>')}
         <button class="btn sm ghost" id="comboClear" style="margin-left:auto">清空</button>
       </div>
       <div class="combo-sum">
-        <div><span class="k">本金</span><b>¥${E.fmt(r.money)}</b></div>
-        <div><span class="k">到账元宝</span><b>${E.fmt(r.yb)}</b></div>
-        <div><span class="k">返利折算</span><b>${E.fmt(Math.round(r.rebVal))}</b></div>
-        <div><span class="k">合计价值</span><b>${E.fmt(Math.round(r.total))}</b></div>
-        <div class="big"><span class="k">组合倍率</span><b>${r.ratio.toFixed(2)}×</b></div>
-        <div><span class="k">笔数</span><b>${r.count}</b></div>
+        <div><span class="k">本金</span><b>¥${E.fmt(c.money)}</b></div>
+        <div><span class="k">总元宝</span><b>${E.fmt(Math.round(ybTotal))}</b></div>
+        ${cols}
+        <div class="big"><span class="k">拿15-1</span><b>${bd.ratioAll.toFixed(2)}×</b></div>
+        <div><span class="k">不拿纳贤</span><b>${bd.ratioNoNaxian.toFixed(2)}×</b></div>
       </div>
-      <div class="out-note" style="margin-top:6px">${r.picks.length > 1
-        ? `组合是本金加权平均：最高 ¥${E.fmt(hi.tier.rmb)} ${hi.tier.ratio.toFixed(2)}×、最低 ¥${E.fmt(lo.tier.rmb)} ${lo.tier.ratio.toFixed(2)}×${drag ? '，低倍率那档会把整体拉下来' : ''}。`
-        : '单档倍率（= 表格里的倍率）。再勾一档就能看组合。'}${r.capped ? ' 有档位超过可买次数，已按上限截断。' : ''}</div>`;
+      <div class="combo-act">
+        <button class="btn sm" id="comboPick">用这一组去选将 →</button>
+        ${c.capped ? '<span class="hintline">有档位超过整期可买次数，已按上限截断</span>' : ''}
+      </div>`;
     const clr = document.getElementById('comboClear');
-    if (clr) clr.onclick = () => { state.comboSel = {}; syncComboRows(); renderCombo(); };
+    if (clr) clr.onclick = () => { state.comboSel = {}; syncChipRows(); renderCombo(); };
+    const pk = document.getElementById('comboPick');
+    if (pk) pk.onclick = () => openPicker({
+      picks: c.picks.map((p) => ({ i: p.tier.i, n: p.n })),
+      c, bd, label: planLabel(c.picks), tag: '自定义',
+    });
+  }
+
+  function syncChipRows() {
+    const body = $('#rateBody');
+    if (!body) return;
+    body.querySelectorAll('.tchip').forEach((lab) => {
+      const i = +lab.dataset.i;
+      const on = state.comboSel[i] != null;
+      const ck = lab.querySelector('.ckT');
+      const nEl = lab.querySelector('.nT');
+      if (ck) ck.checked = on;
+      if (nEl) { nEl.disabled = !on; if (on) nEl.value = state.comboSel[i]; }
+      lab.classList.toggle('on', on);
+    });
+  }
+
+  /* ---------- 选将：给定充值组合，看这些产出能覆盖谁 ---------- */
+  function openPicker(plan) {
+    state.pickPlan = plan;
+    state.rateView = 'pick';
+    state.pickSel = new Set();
+    state.pickCat = null;
+    renderRates();
+  }
+
+  function renderPicker() {
+    const p = state.pickPlan;
+    if (!p) { state.rateView = 'table'; return renderRates(); }
+    const days = state.ctx.days;
+    const c = p.c || RATES.combo(p.picks, days);
+    const bd = p.bd || RATES.breakdown(c, days);
+    const ybTotal = bdYbTotal(bd);
+    const soft = Math.max(0, bd.sum - ybTotal);
+    const budget = ybTotal + soft;
+
+    /* 组合实际能给的「只能靠充值档拿到」的道具。
+       水晶球是硬门槛：买不到、只能充指定档位送，预算够也没用。 */
+    const haveBall = (c.gives && c.gives['狂欢水晶球']) || 0;
+    const ballOf = (mid) => (mid || [])
+      .filter((m) => /水晶球/.test(m.cur || ''))
+      .reduce((a, m) => a + (m.qty || 0), 0);
+
+    const all = (state.targets || [])
+      /* 只留「有真实购买路线」的目标：靠单买兜底或压根没渠道的，
+         锁了充值也算不出确定价，放进列表只会让人白勾 */
+      .map((t) => {
+        const real = (t.routes || [])
+          .filter((r) => !r.manual && r.kind)
+          .sort((a, b) => a.yb - b.yb);
+        if (!real.length || !(real[0].yb > 0)) return null;
+        /* 方案层认不认这条路，才是真标准：engine 有路线但需要层找不到商店项的，
+           生成方案时会落进「未计入报价」，别放进列表让人白勾 */
+        const nf = SCHED.needOf([t.name]);
+        if (!nf.pick.length || !nf.pick[0].kind) return null;
+        const mid = real[0].mid || [];
+        const ball = ballOf(mid);
+        return {
+          name: t.name,
+          cat: ((state.lib && state.lib.get(t.name)) || {}).cat || '其他',
+          need: real[0].yb,
+          route: real[0].label || real[0].key || '',
+          ball,
+          lackBall: ball > haveBall,
+        };
+      })
+      .filter(Boolean)
+      .filter((x) => x.need <= budget)
+      .sort((a, b) => a.need - b.need);
+
+    /* 默认先看武将：按价位升序排在前面的多半是 2888 的皮肤，不是用户真正要找的 */
+    const countOf = (k) => (k === '全部' ? all.filter((x) => !x.lackBall).length
+      : all.filter((x) => !x.lackBall && x.cat === k).length);
+    const cat = state.pickCat || (countOf('武将') > 0 ? '武将' : '全部');
+    const pool = (cat === '全部' ? all : all.filter((x) => x.cat === cat))
+      .filter((x) => !x.lackBall);
+    const cntOf = countOf;
+    const lackList = all.filter((x) => x.lackBall);
+
+    const sel = state.pickSel || new Set();
+    const items = pool.map((x) => `<tr class="pickrow${sel.has(x.name) ? ' on' : ''}" data-n="${x.name}">
+      <td><input type="checkbox" class="ckP" data-n="${x.name}" ${sel.has(x.name) ? 'checked' : ''}></td>
+      <td><b>${x.name}</b><span class="catpill ${x.cat === '武将' ? 'w' : ''}">${x.cat}</span></td>
+      <td class="num">${E.fmt(Math.round(x.need))}</td>
+      <td class="sub">${x.route}${x.ball ? `<i class="balltag">需 ${x.ball} 球</i>` : ''}</td>
+    </tr>`).join('');
+
+    const tabs = ['全部', '武将', '皮肤'].filter((k) => k === '全部' || cntOf(k) > 0)
+      .map((k) => `<button class="picktab${cat === k ? ' on' : ''}" data-cat="${k}">${k} <i>${cntOf(k)}</i></button>`).join('');
+
+    $('#rateBody').innerHTML = `
+      <div class="pick-head">
+        <button class="btn sm ghost" id="pickBack">← 返回充值分析</button>
+        <div class="pick-sum">
+          <b>${p.label}</b>
+          <span>¥${E.fmt(c.money)} · 可花元宝 ${E.fmt(Math.round(ybTotal))} · 折算资源 ${E.fmt(Math.round(soft))}</span>
+        </div>
+      </div>
+      <div class="pick-note">按「这些产出全部可用于该目标」估的可覆盖范围，共 <b>${pool.length}</b> 个。
+        勾选后生成方案，充值锁定成这一组，不再由算法改。
+        ${lackList.length ? `<br><b>已排除 ${lackList.length} 个要水晶球的目标</b>：这一组只送 ${haveBall} 个球，而球只能从指定充值档来，预算够也补不了。` : ''}</div>
+      <div class="pick-tabs">${tabs}</div>
+      <div class="pick-list">
+        <table class="pick-table">
+          <thead><tr><th style="width:34px">选</th><th>目标</th><th class="num">需要元宝</th><th>主要途径</th></tr></thead>
+          <tbody>${items || '<tr><td colspan="4" class="empty" style="padding:18px 0;text-align:center;color:var(--ink-3)">这组充值覆盖不了任何目标，加大额度或换一组</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div class="pick-foot">
+        <span>已选 <b id="pickCount">${sel.size}</b> 个 · 合计 <b id="pickNeed">0</b> 元宝 · 球 <b id="pickBall">0</b>/${haveBall}</span>
+        <button class="btn sm ghost" id="pickCheap">选最便宜的 3 个</button>
+        <button class="btn sm ghost" id="pickClear">清空</button>
+        <button class="btn sm" id="pickGo" ${sel.size ? '' : 'disabled'}>用这一组生成方案</button>
+      </div>`;
+
+    const refresh = () => {
+      const picked = all.filter((x) => sel.has(x.name));
+      const need = picked.reduce((a, x) => a + x.need, 0);
+      const ball = picked.reduce((a, x) => a + (x.ball || 0), 0);
+      const cnt = document.getElementById('pickCount');
+      const nd = document.getElementById('pickNeed');
+      const bl = document.getElementById('pickBall');
+      const go = document.getElementById('pickGo');
+      if (cnt) cnt.textContent = sel.size;
+      if (nd) nd.textContent = E.fmt(Math.round(need));
+      if (bl) {
+        bl.textContent = ball;
+        bl.style.color = ball > haveBall ? 'var(--accent)' : '';
+      }
+      if (go) {
+        go.disabled = !sel.size;
+        go.textContent = ball > haveBall ? `球不够（要 ${ball}，只有 ${haveBall}）` : '用这一组生成方案';
+        go.disabled = !sel.size || ball > haveBall;
+      }
+    };
+    refresh();
+
+    $('#pickBack').onclick = () => { state.rateView = 'table'; renderRates(); };
+    $('#rateBody').querySelectorAll('.picktab').forEach((el) => {
+      el.onclick = () => { state.pickCat = el.dataset.cat; renderPicker(); };
+    });
+    $('#rateBody').querySelectorAll('.ckP').forEach((el) => {
+      el.onchange = () => {
+        const n = el.dataset.n;
+        if (el.checked) sel.add(n); else sel.delete(n);
+        el.closest('tr').classList.toggle('on', el.checked);
+        refresh();
+      };
+    });
+    $('#pickCheap').onclick = () => {
+      sel.clear();
+      pool.slice(0, 3).forEach((x) => sel.add(x.name));
+      $('#rateBody').querySelectorAll('.ckP').forEach((el) => {
+        el.checked = sel.has(el.dataset.n);
+        el.closest('tr').classList.toggle('on', el.checked);
+      });
+      refresh();
+    };
+    $('#pickClear').onclick = () => {
+      sel.clear();
+      $('#rateBody').querySelectorAll('.ckP').forEach((el) => {
+        el.checked = false;
+        el.closest('tr').classList.remove('on');
+      });
+      refresh();
+    };
+    $('#pickGo').onclick = () => {
+      state.selected = new Set(sel);
+      state.lockCharge = p.picks.map((x) => ({ i: x.i, n: x.n, alt: !!x.alt }));
+      state.rateView = 'table';
+      $('#rateModal').classList.remove('on');
+      renderSelected();
+      renderPlan();
+    };
   }
 
   function renderDp() {
@@ -741,11 +1078,11 @@
     if (!list.length) { out.innerHTML = '<div class="warnbar">超出本期档位上限（全部买满也不够），请调小目标。</div>'; return; }
     out.innerHTML = list.map((r) => {
       const tagCls = r.tag === '最省' ? 'a' : r.tag === '笔数最少' ? 'g' : '';
-      const picks = r.picks.map((p) => `¥${E.fmt(p.tier.rmb)}×${p.n}`).join(' + ');
+      const picks = r.picks.map((p) => `¥${E.fmt(p.tier.rmb)}×${p.n}${p.alt ? '<i class="altmark">绑</i>' : ''}`).join(' + ');
       return `<div class="combo-row">
         <span class="rtag ${tagCls}">${r.tag}</span>
         <div>
-          <div><b>¥${E.fmt(r.money)}</b>　<span class="sub">到账 ${E.fmt(r.yb)} 元宝（多 ${E.fmt(r.over)}）· ${r.count} 笔 · 返利折 ${E.fmt(Math.round(r.rebate))}</span></div>
+          <div><b>¥${E.fmt(r.money)}</b>　<span class="sub">可花元宝 ${E.fmt(r.yb)}（多 ${E.fmt(r.over)}）· ${r.count} 笔 · 返利折 ${E.fmt(Math.round(r.rebate))}</span></div>
           <div class="sub" style="margin-top:2px">${picks}</div>
         </div>
       </div>`;
@@ -850,6 +1187,7 @@
     $('#pKnot').value = P.params.qifuExtraKnot;
 
     if (restoreLocal() && P.meta.imported) { /* 使用上次导入的数据 */ }
+    renderCouponStock();
     state.ctx = buildCtx();
     markCtx();
     state.lib = E.buildLibrary();
@@ -863,7 +1201,7 @@
     renderPlan();
 
     $('#search').oninput = (e) => { state.q = e.target.value; renderGrid(); };
-    ['#pDays', '#pRatio', '#pKnot', '#sYb', '#sJade', '#sLamp', '#sNana', '#sC1', '#sC2', '#sC3'].forEach((sel) => {
+    ['#pDays', '#pRatio', '#pKnot', '#sYb', '#sJade', '#sLamp', '#sNana'].forEach((sel) => {
       const el = $(sel);
       if (el) el.addEventListener('change', recalc);
     });
@@ -904,8 +1242,12 @@
     const { model, report } = PARSER.parse(text);
     state.pendingImport = model;
     const box = $('#parseReport');
+    const miss = model.miss || [];
+    const unsup = model.unsupported || [];
     box.innerHTML = `<div style="margin-bottom:8px">识别结果：</div>
-      <ul style="padding-left:16px;margin:0 0 10px">${report.map((r) => `<li class="ok">${r}</li>`).join('') || '<li class="bad">未识别到可解析的表格</li>'}</ul>
+      <ul style="padding-left:16px;margin:0 0 8px">${report.map((r) => `<li class="ok">${r}</li>`).join('') || '<li class="bad">未识别到可解析的表格</li>'}</ul>
+      ${miss.length ? `<div class="bad" style="margin-bottom:6px">本期公告未找到：${miss.join('、')}</div>` : ''}
+      ${unsup.length ? `<div style="margin-bottom:6px;color:var(--ink-3)">未纳入精算的玩法：${unsup.map((u) => u.name).join('、')}（公告有，但没有建模，不会算进价格）</div>` : ''}
       <div style="margin-bottom:4px;color:var(--ink-3)">可编辑的解析结果（改完点「应用到本期」）：</div>
       <textarea id="jsonEdit" style="width:100%;height:220px;border:1px solid var(--line-strong);border-radius:8px;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:11px">${JSON.stringify(model, null, 2).replace(/</g, '&lt;')}</textarea>`;
     $('#btnApply').disabled = !report.length;
@@ -927,10 +1269,16 @@
     state.lib = E.buildLibrary();
     state.selected = new Set();
     state.pin = {};
+    /* 换期后档位表变了，锁定的充值组合（按档位索引记的）必须清掉 */
+    state.lockCharge = null;
+    state.comboSel = {};
+    planCache = null;
+    RATES.resetUnit();
     $('#pDays').value = P.meta.days;
     $('#eventMeta').textContent = `${P.meta.title}　·　${P.meta.start} ~ ${P.meta.end}`;
     state.ctx = buildCtx();
     markCtx();
+    renderCouponStock();
     syncTargets();
     renderCats(); renderWays(); renderGrid(); renderSelected(); renderPlan();
     $('#importModal').classList.remove('on');

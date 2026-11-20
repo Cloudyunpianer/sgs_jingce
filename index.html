@@ -64,7 +64,7 @@
           <label>纳贤令<input type="number" id="sNana" value="0" min="0" step="1"></label>
         </div>
         <div class="mini-cap">抵价券 · 一次购买用一张</div>
-        <div class="mini g3">
+        <div class="mini g3" id="couponStock">
           <label title="抵价券 3000-1111">1111<input type="number" id="sC1" value="0" min="0"></label>
           <label title="抵价券 3000-2888">2888<input type="number" id="sC2" value="0" min="0"></label>
           <label title="抵价券 6666-6665">6665<input type="number" id="sC3" value="0" min="0"></label>
@@ -184,9 +184,9 @@
 
 <!-- 充值倍率表 -->
 <div class="modal" id="rateModal">
-  <div class="modal-box wide">
+  <div class="modal-box xwide">
     <div class="modal-head">
-      <h2>充值倍率表 · 哪个档位最值</h2>
+      <h2>充值分析 · 充多少、能拆出什么、能拿谁</h2>
       <button class="btn ghost sm" id="closeRate">关闭</button>
     </div>
     <div class="modal-body" id="rateBody"></div>
@@ -213,6 +213,7 @@
   </div>
 </div>
 
+<script src="js/currency.js"></script>
 <script src="js/data.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/plan.js"></script>

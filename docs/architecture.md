@@ -7,6 +7,8 @@
 ## 分层
 
 ```
+currency.js   品类归一（专名 → 引擎 key）        窗口对象 CUR
+   │
 data.js       纯数据（PRESET）
    │
    ├─ engine.js     目标 → 中间道具 → 元宝      窗口对象 E
@@ -23,7 +25,7 @@ data.js       纯数据（PRESET）
 `index.html` 里的加载顺序不能乱——每个模块是 IIFE，加载时就把 `window.PRESET` 等抓进闭包了：
 
 ```html
-data.js → engine.js → plan.js → classify.js → rates.js → mincost.js → parser.js → ui.js
+currency.js → data.js → engine.js → plan.js → classify.js → rates.js → mincost.js → parser.js → ui.js
 ```
 
 所有模块都挂在 `window` 上（`window.E` / `window.SCHED` / ...），因为要能 `file://` 直接开，不能用 ES module（跨域限制）。`tools/check.js` 也是靠 `eval` 这几个文件 + 伪造 `global.window` 来跑断言的。
@@ -45,8 +47,9 @@ data.js → engine.js → plan.js → classify.js → rates.js → mincost.js �
        │    ├─ 排程枚举       活跃天数 × 每天冲到哪档
        │    ├─ settle()      抵价券结算
        │    └─ tierSum()     档位返利 → 回冲下一轮需求
-       ├─ chargePlan()       充值组合 DP（含水晶球约束）
-       └─ → { money, netSpend, couponSave, charge, dist, audit, ... }
+       ├─ chargePlan()       充值组合 DP（先逐档定 A/B 路线，再凑额；含水晶球约束）
+       ├─ 外层不动点          充值返到的券+道具喂回上一轮重算，只减不增，选自洽解
+       └─ → { money, netSpend, couponSave, charge, chargeBack, audit, ... }
 ```
 
 ---
@@ -107,9 +110,34 @@ kind === 'progress' 且 sysId 是纳贤 → naxian
 
 `MC.search(name, qty, ctx, {stock})`。三层枚举 + 下界剪枝，返回 `{rows: [{}], cands, pruned}`。跑得慢（单个目标几十毫秒到几百毫秒），所以只在弹窗里按需调用。
 
+### `currency.js` — 品类归一
+
+公告每期换专名（寒露夺宝券 / 重阳夺宝券 / 秋华夺宝券），引擎只认品类。`CUR.canon(name)` 把任意 `XX夺宝券` 收敛成 `K.duobao`，`CUR.coupon('抵价券（3000-2500）')` 按面额拆成 `{face, min, key:'券2500'}`。
+
+内部 key 沿用 `狂欢夺宝券` / `狂欢水晶球` 这两个历史名字，是为了不动 engine / rates / plan 里几十处引用；展示时用 `CUR.show(key)` 还原成本期叫法（`P.curLabel`）。
+
 ### `parser.js` — 公告解析
 
-`parse(md)` → `{boxes, shops, naxian, duobao, tubs, directSales, daily}` 之类的结构，UI 再摊成逐条 diff 让人确认。识别率一般，只覆盖格式稳定的部分。
+`parse(md)` → `{model, report}`，`apply(model)` 把 model 全量写回 `PRESET`。
+
+```js
+model = {
+  meta, systems, shops,                      // 礼盒/商店/系统
+  coupons, chargeTiers, cumCharge,          // 充值
+  dailyTiers, cumSpend,                     // 消费
+  bundles,                                  // 商城商品（含限时商品与单件直售）
+  freeGains, boughtGains,                   // 真白送 / 需购买
+  directSales, unsupported, curLabel, miss,
+}
+```
+
+三条不变量：
+
+1. **不认专名**——只认表头形状和固定句式；
+2. **apply 先清空**——解析不到的板块一律置空，写 `log`，绝不沿用上一期；
+3. **白送口径分家**——表头 `天数` 是活跃任务（真白送），`登录天数/累计登录` 是买勋章才有的（`boughtGains`）。
+
+解析不到的东西进 `model.miss`，UI 在导入弹窗里列出来。
 
 ### `ui.js` — 界面
 

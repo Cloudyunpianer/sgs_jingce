@@ -33,7 +33,7 @@ window.MINCOST = (function () {
     }));
     const buys = [...m.entries()].map(([n, c]) => (c > 1 ? `${n}×${c}` : n));
     const chg = (r.charge.picks || []).map((p) => `${E.fmt(p.t.need / 100)}元×${p.n}`
-      + (p.crystal ? '（水晶球档）' : p.alt ? '（双倍箱）' : ''));
+      + (p.crystal ? '（水晶球档）' : p.alt ? '（换绑元）' : ''));
     return { chg: chg.join(' + ') || '不充值', buys: buys.join('、') || '无' };
   }
 
