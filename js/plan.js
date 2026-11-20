@@ -247,27 +247,53 @@ window.SCHED = (function () {
     return Object.keys(P.coupons || {}).sort((a, b) => (P.coupons[b].face || 0) - (P.coupons[a].face || 0));
   }
 
-  /* 抵价券：一次购买只能用一张 */
+  /* 抵价券：一次购买（一单）只能用一张，但一单可以买 N 个同一件商品。
+     所以门槛看的是「当单总额 = 单价 × 数量」，不是单件价格。
+     以前按单件判，纳贤令礼包 1000 元宝永远够不到「3000-2500」的门槛，
+     11 张券只能套住 8888 的折扣礼包 1 张，等于把整期的券全废了。
+     拆单也有讲究：12 个 1000 元宝的令并成一单只省 2500，
+     拆成 4 单（每单 3 个刚好过 3000）能省 10000。 */
+  function couponBuckets(dist) {
+    const bs = [];
+    dist.forEach((d) => {
+      const m = new Map();
+      d.packs.forEach((p) => {
+        if (!p.c1111 || p.coupon || p.direct || p.price <= 0) return;
+        if (!m.has(p.id)) { const b = { day: d, id: p.id, price: p.price, packs: [], free: 0 }; m.set(p.id, b); bs.push(b); }
+        const b = m.get(p.id); b.packs.push(p); b.free++;
+      });
+    });
+    bs.sort((a, b) => b.price - a.price);
+    return bs;
+  }
+
   function applyCoupons(dist, pool) {
     const left = {};
     cpnKeys().forEach((k) => { left[k] = (pool && pool[k]) || 0; });
     let save = 0;
     const used = {};
+    dist.forEach((d) => d.packs.forEach((p) => { p.__c = false; p.__disc = 0; }));
+    /* 先上大面额券：面额固定，套在越贵的单上越不吃亏 */
+    const buckets = couponBuckets(dist);
     cpnKeys().forEach((ck) => {
       const def = P.coupons[ck];
       let avail = left[ck] || 0;
       if (!avail || !def) return;
-      const cands = [];
-      dist.forEach((d) => d.packs.forEach((p) => {
-        if (p.c1111 && !p.__c && !p.coupon && p.price >= def.min) cands.push(p);
-      }));
-      cands.sort((a, b) => b.price - a.price);
-      for (const p of cands) {
-        if (!avail) break;
-        avail--; p.__c = true; p.__disc = def.face;
-        save += def.face;
-        used[ck] = (used[ck] || 0) + 1;
-      }
+      buckets.forEach((b) => {
+        if (!avail) return;
+        /* 一单至少要凑够 def.min，因此每单要买 need 件 */
+        const need = Math.max(1, Math.ceil((def.min - 1e-6) / b.price));
+        const orders = Math.floor(b.free / need);
+        const k = Math.min(avail, orders);
+        if (k <= 0) return;
+        for (let i = 0; i < k; i++) {
+          const p = b.packs.find((x) => !x.__c);
+          if (p) { p.__c = true; p.__disc = (p.__disc || 0) + def.face; }
+        }
+        b.free -= k * need;
+        avail -= k; save += k * def.face;
+        used[ck] = (used[ck] || 0) + k;
+      });
     });
     dist.forEach((d) => {
       d.net = d.spend - d.packs.reduce((a, p) => a + (p.__disc || 0), 0);
@@ -319,13 +345,14 @@ window.SCHED = (function () {
     Object.keys(est).forEach((k) => { if (k in pool) pool[k] += est[k]; });
 
     let ap = { save: 0, used: {} };
-    for (let it = 0; it < 5; it++) {
+    for (let it = 0; it < 14; it++) {
       dist.forEach((d) => d.packs.forEach((p) => { p.__c = false; p.__disc = 0; }));
       dist.forEach((d) => { d.net = d.spend; });
       ap = applyCoupons(dist, pool);
       const earned = tierSum(dist);
       let ok = true;
-      ['券1111', '券2888', '券6665'].forEach((k) => {
+      /* 券的 key 每期不同（1111/2888/6665 → 2500/1000），不能写死 */
+      cpnKeys().forEach((k) => {
         if ((ap.used[k] || 0) > (base[k] || 0) + (earned[k] || 0)) ok = false;
       });
       if (ok) break;
@@ -370,6 +397,18 @@ window.SCHED = (function () {
     return giveVal > bind
       ? { route: 'A', y: t.need, giveVal }
       : { route: 'B', y: t.need + bind, giveVal: 0 };
+  }
+
+  /* 累计档：达到门槛就一次性发，和单笔/每日档是叠加的。
+     以前 P.cumCharge / P.cumSpend 只解析展示、从不进方案，
+     于是「充到 12800 送 6 张 2500 券 + 10 令」这种大额返利被整段丢掉。 */
+  function cumGives(tiers, total) {
+    const got = {};
+    (tiers || []).forEach((t) => {
+      if (total + 1e-6 < t.need) return;
+      Object.keys(t.gives || {}).forEach((k) => { got[k] = (got[k] || 0) + t.gives[k]; });
+    });
+    return got;
   }
 
   /* opts.fixed：锁定充值组合（「先选充值再选将」用）。
@@ -677,9 +716,18 @@ window.SCHED = (function () {
     }));
     r.produced = produced;
 
+    /* 累计充值档：按真实到账元宝判定，达到门槛就叠加发放 */
+    r.cumChargeGives = cumGives(P.cumCharge, r.charge.yb);
+    /* 累计消费档：按净消费判定（券后实付，与游戏内「消费额」口径一致） */
+    r.cumSpendGives = cumGives(P.cumSpend, r.netSpend);
+
     /* 充值返利也是来源之一：水晶球只从充值档送，实际买不到，
        不把它算进「已有」就会把整单误判成「本期买不到」 */
-    const cGives = (r.charge && r.charge.gives) || {};
+    const cGives = Object.assign({}, (r.charge && r.charge.gives) || {});
+    [r.cumChargeGives, r.cumSpendGives].forEach((g) => {
+      Object.keys(g || {}).forEach((k) => { cGives[k] = (cGives[k] || 0) + g[k]; });
+    });
+    r.cGives = cGives;
     r.audit = KEYS.map((k) => {
       const stockUse = Math.min(stockOf(k), need0[k] || 0);
       /* 充值送的量只有「前面几层还不够」的部分才真正顶用，超出的不算 */
@@ -745,7 +793,7 @@ window.SCHED = (function () {
     for (let i = 0; i < 8; i++) {
       const r = solveOnce(names, opts, pool);
       cands.push({ r, pool: Object.assign({}, pool) });
-      const g = (r.charge && r.charge.gives) || {};
+      const g = r.cGives || (r.charge && r.charge.gives) || {};
       const next = {};
       let same = true;
       allKeys.forEach((k) => {
@@ -803,7 +851,8 @@ window.SCHED = (function () {
       const def = P.coupons[k] || { face: 0, min: 0, name: k };
       const init = st[k] || 0;
       const daily = (r.tierReward && r.tierReward[k]) || 0;
-      const charge = (r.charge && r.charge.gives && r.charge.gives[k]) || 0;
+      /* 充值列要含「累计充值 / 累计消费」档，否则券流水账对不上（获得 ≠ 用掉 + 结余） */
+      const charge = ((r.cGives && r.cGives[k]) || (r.charge && r.charge.gives && r.charge.gives[k])) || 0;
       const used = (r.coupons && r.coupons[k]) || 0;
       const got = init + daily + charge;
       const left = Math.max(0, got - used);

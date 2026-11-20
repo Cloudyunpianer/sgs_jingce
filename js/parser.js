@@ -422,11 +422,26 @@ window.PARSER = (function () {
     if (model.chargeTiers.length) rep.push(`单笔充值：${model.chargeTiers.length} 档`); else miss.push('单笔充值');
 
     /* ---------- 12. 累计充值 / 充值返券（单独存，不混进单笔档） ---------- */
+    const dailyChgSeen = new Set();
+    const dailySeen = new Set();
+    /* 「每日重置，累计充值X」不是一次性累计档，而是每天都能领的充值档。
+       以前被 cumRe 一起抓走，导致「充 5888 送 10 令/天」缩水成一次性 10 令。 */
+    const dailyChgRe = /每日重置[，,]\s*累计充值(?:达到)?(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
+    while ((mm = dailyChgRe.exec(text))) {
+      const gives = toGives(mm[2].replace(/[，,]\s*(?:每日)?限完成\d+次.*$/, ''));
+      model.chargeTiers.push({
+        need: +mm[1], gives, perDay: 1, total: undefined,
+        note: mm[2].slice(0, 36),
+      });
+      dailyChgSeen.add(+mm[1] + '|' + JSON.stringify(gives));
+    }
     const cumRe = /累计充值(?:达到)?(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
     while ((mm = cumRe.exec(cText))) {
       const tail = mm[2];
       const totalM = /限完成(\d+)次/.exec(tail);
       const body = tail.replace(/[，,]\s*(?:累计)?限完成\d+次.*$/, '');
+      /* 已经被「每日重置」那条收走的不再重复记成一次性档 */
+      if (dailyChgSeen.has(+mm[1] + '|' + JSON.stringify(toGives(body)))) continue;
       model.cumCharge.push({
         need: +mm[1], gives: toGives(body),
         total: totalM ? +totalM[1] : 1, note: body.slice(0, 36),
@@ -437,9 +452,21 @@ window.PARSER = (function () {
     /* ---------- 13. 每日消费 / 累计消费 ---------- */
     const sText = secText(/消费/) || text;
     const dayRe = /每日(?:消费达到|重置，消费)(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
+    const pushDaily = (need, body) => {
+      const gives = toGives(body);
+      const key = need + '|' + JSON.stringify(gives);
+      if (dailySeen.has(key)) return;
+      dailySeen.add(key);
+      model.dailyTiers.push({ need, gives, note: body.slice(0, 36) });
+    };
     while ((mm = dayRe.exec(sText))) {
-      const body = mm[2].replace(/[，,]\s*每日限完成\d+次.*$/, '');
-      model.dailyTiers.push({ need: +mm[1], gives: toGives(body), note: body.slice(0, 36) });
+      pushDaily(+mm[1], mm[2].replace(/[，,]\s*每日限完成\d+次.*$/, ''));
+    }
+    /* 章节标题里没有「消费」两个字的（如「初冬特惠」）会整段漏掉，
+       这里再扫一遍全文兜底：「每日重置，消费X元宝」是独立的一档。 */
+    const dailySpendRe = /每日重置[，,]\s*消费(?:达到)?(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
+    while ((mm = dailySpendRe.exec(text))) {
+      pushDaily(+mm[1], mm[2].replace(/[，,]\s*(?:每日)?限完成\d+次.*$/, ''));
     }
     const cumSRe = /累计消费(?:达到)?(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
     while ((mm = cumSRe.exec(sText))) {

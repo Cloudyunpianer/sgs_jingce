@@ -110,7 +110,7 @@ console.log('合计充值', money(cp.total), '元宝 = ¥' + money(cp.total / 10
      降 —— 充值返的灯/令真的回冲需求了，不再「账本记着、方案照买」。
    ============================================================ */
 console.log('\n--- 回归（券后实付，¥） ---');
-const REG = [['威曹彰', 840], ['谋钟会', 280], ['任婉', 646], ['春宵彩翼*任婉', 310], ['谋程普', 328]];
+const REG = [['威曹彰', 838], ['谋钟会', 256], ['任婉', 646], ['春宵彩翼*任婉', 310], ['谋程普', 328]];
 REG.forEach(([n, want]) => {
   const r = S.build([n], { days: 9, stock: {} });
   eq(`${n} 需充值`, r.money, want);
@@ -209,7 +209,7 @@ dp.forEach((d) => ok(`凑额「${d.tag}」覆盖目标`,
    断言 4：反查结果 ≤ 单买
    ============================================================ */
 console.log('\n--- 断言 4：反查 ≤ 单买 ---');
-[['威曹彰', 840], ['谋钟会', 280], ['任婉', 646]].forEach(([n, reg]) => {
+[['威曹彰', 838], ['谋钟会', 256], ['任婉', 646]].forEach(([n, reg]) => {
   const res = M.search(n, 1, ctx, { stock: { coupons: {} } });
   if (res.err) { console.log('!!', n, res.err); fail++; return; }
   const top = res.rows[0];
@@ -421,12 +421,12 @@ ok('未建模玩法被标记', PM.unsupported.some((u) => u.name === '幸运砸�
    只断言「能跑通 + 关键量不漂」，具体金额变动时同步更新这里的期望值。 */
 const SAMPLE_DIR = path.join(root, 'samples');
 const SAMPLES = [
-  { file: '20260904_8061_5810.md', days: 9, targets: 68, money: 6027, note: '开学焕新' },
-  { file: '20260910_1235_5818.md', days: 5, targets: 32, money: 2078, note: '秋日活动' },
+  { file: '20260904_8061_5810.md', days: 9, targets: 68, money: 6007, note: '开学焕新' },
+  { file: '20260910_1235_5818.md', days: 5, targets: 32, money: 1212, note: '秋日活动' },
   { file: '20260916_7285_4514.md', days: 9, targets: 61, money: 3000, note: '中秋砸蛋' },
-  { file: '20260922_3527_1115.md', days: 3, targets: 18, money: 2217, note: '金秋预热' },
+  { file: '20260922_3527_1115.md', days: 3, targets: 18, money: 1494, note: '金秋预热' },
   { file: '20260929_3980_1514.md', days: 10, targets: 60, money: 5978, note: '金秋盛典' },
-  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 2246, note: '初冬纳贤' },
+  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 1806, note: '初冬纳贤' },
 ];
 console.log('\n— 真实样本回归 —');
 SAMPLES.forEach((sp) => {
@@ -477,6 +477,26 @@ SAMPLES.forEach((sp) => {
     const lf = S.leftoverPlan(S.ledger(plan, { coupons: {} }));
     ok(`${sp.note} 券残值判定与当期通道一致`, lf.dead === (!hasLamp && !hasBox),
       `灯包=${hasLamp} 盒包=${hasBox} → ${lf.dead ? '不计残值' : '可换购'}（结余 ${lf.n} 张）`);
+  }
+  {
+    /* 抵价券：省下的钱必须等于「用掉的张数 × 面额」。
+       以前按单件判门槛，1000 元宝的商品永远够不到「3000-2500」，
+       券成批闲置；现在按「当单总额 = 单价 × 数量」拆单。 */
+    const used = plan.coupons || {};
+    const wantSave = Object.keys(used)
+      .reduce((a, k) => a + used[k] * (((P.coupons || {})[k] || {}).face || 0), 0);
+    ok(`${sp.note} 券面额与省下的钱对得上`,
+      Math.abs((plan.couponSave || 0) - wantSave) < 1e-6,
+      `${money(plan.couponSave || 0)} = ${Object.keys(used).map((k) => `${k}×${used[k]}`).join(' ') || '未用券'}`);
+  }
+  {
+    /* 累计充值档：没达到门槛就不该发。最低一档都没到，返利必须为空。 */
+    const tiers = (P.cumCharge || []).filter((t) => Object.keys(t.gives || {}).length);
+    const minNeed = tiers.length ? Math.min(...tiers.map((t) => t.need)) : Infinity;
+    const got = plan.cumChargeGives || {};
+    ok(`${sp.note} 累计档未达标不发`,
+      plan.charge.yb >= minNeed - 1e-6 || Object.keys(got).length === 0,
+      `充值 ${money(plan.charge.yb)} / 最低档 ${money(minNeed)} → ${JSON.stringify(got)}`);
   }
   {
     /* 走「换绑元」的档位，不能再把道具包算进产出（双倍箱二选一） */
