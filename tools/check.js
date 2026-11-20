@@ -421,11 +421,12 @@ ok('未建模玩法被标记', PM.unsupported.some((u) => u.name === '幸运砸�
    只断言「能跑通 + 关键量不漂」，具体金额变动时同步更新这里的期望值。 */
 const SAMPLE_DIR = path.join(root, 'samples');
 const SAMPLES = [
-  { file: '20260904_8061_5810.md', days: 9, targets: 70, money: 6027, note: '开学焕新' },
-  { file: '20260910_1235_5818.md', days: 5, targets: 23, money: 2078, note: '秋日活动' },
-  { file: '20260916_7285_4514.md', days: 9, targets: 62, money: 3000, note: '中秋砸蛋' },
-  { file: '20260922_3527_1115.md', days: 3, targets: 25, money: 2217, note: '金秋预热' },
-  { file: '20260929_3980_1514.md', days: 10, targets: 62, money: 5978, note: '金秋盛典' },
+  { file: '20260904_8061_5810.md', days: 9, targets: 68, money: 6027, note: '开学焕新' },
+  { file: '20260910_1235_5818.md', days: 5, targets: 32, money: 2078, note: '秋日活动' },
+  { file: '20260916_7285_4514.md', days: 9, targets: 61, money: 3000, note: '中秋砸蛋' },
+  { file: '20260922_3527_1115.md', days: 3, targets: 18, money: 2217, note: '金秋预热' },
+  { file: '20260929_3980_1514.md', days: 10, targets: 60, money: 5978, note: '金秋盛典' },
+  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 2246, note: '初冬纳贤' },
 ];
 console.log('\n— 真实样本回归 —');
 SAMPLES.forEach((sp) => {
@@ -455,6 +456,28 @@ SAMPLES.forEach((sp) => {
     plan.chargeBackOk !== false,
     Object.keys(plan.chargeBack || {}).filter((k) => plan.chargeBack[k] > 0)
       .map((k) => `${k} 假设${plan.chargeBack[k]}/实际${plan.charge.gives[k] || 0}`).join(' ') || '本轮无回冲');
+  {
+    /* 海纳百川 / 特惠精选福袋：公告只写「累计纳贤*N，可领取奖励：A、B、…，6选1」，
+       没有武将名可抓。以前靠沿用内置名单，换期后名单里全是上一期的将。
+       现在必须从公告现解析，且每个候选都要真进目标库。 */
+    const nxS = P.systems.find((s) => s.id === 'naxian') || {};
+    const hy = nxS.haiyou || [];
+    ok(`${sp.note} 多选一解析到候选`, hy.length > 0 && hy.every((h) => h.items.length > 0 && h.n > 0),
+      hy.map((h) => `${h.items.length}选1×${h.cap}@${h.n}令`).join(' ') || '无');
+    const missing = [];
+    hy.forEach((h) => h.items.forEach((nm) => { if (!l.get(nm)) missing.push(nm); }));
+    ok(`${sp.note} 福袋候选都在库`, missing.length === 0, missing.join('、') || '全在');
+  }
+  {
+    /* 结余券的「换灯 / 换玉」必须当期真有单买通道才算数：
+       没有灯包、也没有礼盒时，那条路线是凭空捏的，残值应判 0。 */
+    const cat = S.catalog();
+    const hasLamp = cat.some((p) => p.gives && p.gives['祈福灯'] > 0);
+    const hasBox = cat.some((p) => p.gives && p.gives['盒'] > 0);
+    const lf = S.leftoverPlan(S.ledger(plan, { coupons: {} }));
+    ok(`${sp.note} 券残值判定与当期通道一致`, lf.dead === (!hasLamp && !hasBox),
+      `灯包=${hasLamp} 盒包=${hasBox} → ${lf.dead ? '不计残值' : '可换购'}（结余 ${lf.n} 张）`);
+  }
   {
     /* 走「换绑元」的档位，不能再把道具包算进产出（双倍箱二选一） */
     const altKeys = new Set();

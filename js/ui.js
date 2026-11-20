@@ -558,11 +558,13 @@
     /* 2.3 免费到手 */
     const freeChips = frees.map((x) => `<span class="${x.on ? '' : 'off'}" title="${x.from}">${x.cur}×${E.fmt(x.qty)}</span>`).join('');
 
-    /* 2.4 结余券的去处：默认单买灯 / 玉，不再算沉没 */
+    /* 2.4 结余券的去处：只有当期真的还在卖灯 / 盒，才谈得上「拿去单买」 */
     const lf = SCHED.leftoverPlan(led);
-    const sunk = led.left > 0
-      ? `<div class="out-note">结余 <b>${led.left}</b> 张券默认拿去单买：换 <b>${lf.lamps}</b> 盏祈福灯（券面抵 ${E.fmt(lf.face)}，实付 <b>${E.fmt(lf.pay)}</b> 元宝，按 1,000/盏折 <b>${E.fmt(lf.value)}</b> 元宝）${lf.jadeQty ? `；改买玉则换 ${lf.jadeQty} 玉、实付 ${E.fmt(lf.jadePay)}` : ''}。券不是沉没额度。</div>`
-      : `<div class="out-note">券刚好用完，没有结余。</div>`;
+    const sunk = led.left <= 0
+      ? `<div class="out-note">券刚好用完，没有结余。</div>`
+      : lf.dead
+        ? `<div class="out-note">结余 <b>${led.left}</b> 张券（券面 ${E.fmt(lf.face)}）。本期商城没有祈福灯 / 礼盒的单买通道，这些券在本单里用不掉，不计入残值。</div>`
+        : `<div class="out-note">结余 <b>${led.left}</b> 张券默认拿去单买：${lf.lampOk ? `换 <b>${lf.lamps}</b> 盏祈福灯（券面抵 ${E.fmt(lf.face)}，实付 <b>${E.fmt(lf.pay)}</b> 元宝，按 1,000/盏折 <b>${E.fmt(lf.value)}</b> 元宝）` : '本期没有祈福灯单卖'}${lf.lampOk && lf.boxOk && lf.jadeQty ? `；改买玉则换 ${lf.jadeQty} 玉、实付 ${E.fmt(lf.jadePay)}` : ''}。券不是沉没额度。</div>`;
 
     box.innerHTML = `
       <h3>过程产出 <em>消费过程中拿到的东西，不是白送的</em></h3>

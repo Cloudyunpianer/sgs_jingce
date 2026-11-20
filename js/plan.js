@@ -91,6 +91,13 @@ window.SCHED = (function () {
       if (qf) { const l = knotLamps(qf.cost); cands.push({ kind: '祈福灯', qty: l, via: `同心结 ${qf.cost} 个`, est: l * UNIT.祈福灯 }); }
       const nx = (nxSys.progress || []).find((p) => p.item === nm);
       if (nx) cands.push({ kind: '纳贤令', qty: nx.n, via: `纳贤 ${nx.n} 次`, est: nx.n * UNIT.纳贤令 });
+      /* 海纳百川 / 特惠精选福袋：累计 N 令后「多选一」，
+         成本口径和指定武将一样（都按 N 令算），只是名单不是必得 */
+      const hy = (nxSys.haiyou || []).find((h) => h.items.includes(nm));
+      if (hy) cands.push({
+        kind: '纳贤令', qty: hy.n, via: `纳贤 ${hy.n} 次（${hy.items.length}选1）`,
+        est: hy.n * UNIT.纳贤令,
+      });
       const jx = shopItem('jinxiu', nm);
       if (jx) { const d = ceil(jx.cost / satinEv); cands.push({ kind: '锦绣', qty: d, via: `绸缎 ${jx.cost} 匹`, est: d * UNIT.锦绣 }); }
       const db = P.systems.filter((s) => s.kind === 'gacha')
@@ -826,10 +833,13 @@ window.SCHED = (function () {
     return s ? qty * s.price : Infinity;
   }
 
-  /* 结余券的默认去处：单买灯（1000 整数倍，正好卡 3,000 / 6,666 门槛）。
-     每张券单独成一笔（一次购买只能用一张），买够门槛的整数盏灯。
-     另给「改买玉」的等价方案：玉单价 10,000 ≥ 所有门槛，一张券抵一个玉。 */
+  /* 结余券的去处：只有当期商城**确实还在卖**灯 / 盒时才成立。
+     灯靠「祈福礼包（单灯）」、玉靠「开盒保底」，这两条通道不是每期都有；
+     没有通道时算出来的「换 N 盏灯」是凭空捏的路线，不如老老实实说券用不掉。 */
   function leftoverPlan(led) {
+    const cat = catalog();
+    const lampOk = cat.some((p) => p.gives && p.gives['祈福灯'] > 0);
+    const boxOk = cat.some((p) => p.gives && p.gives['盒'] > 0);
     const lamp = SINGLES.祈福灯;
     const jade = SINGLES.传世宝玉;
     const rows = [];
@@ -853,6 +863,9 @@ window.SCHED = (function () {
       value: lamps * lamp.price,
       jadeQty, jadePay,
       lampUnit: lamp.price, jadeUnit: jade.price,
+      lampOk, boxOk,
+      /* 两条通道都没有时，结余券就是纯粹用不掉的额度 */
+      dead: !lampOk && !boxOk,
     };
   }
 

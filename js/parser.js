@@ -189,12 +189,39 @@ window.PARSER = (function () {
       rep.push(`累计祈福：${knot.length} 档（含同心结 ${knot.filter((x) => x[1]).length} 档）`);
     }
 
-    /* ---------- 4. 纳贤进度 ---------- */
-    const nxRe = /累计纳贤(.+?)\*(\d+)[，,]\s*可领取奖励：(.+?)[，,]?\s*限完成1次/g;
+    /* ---------- 4. 纳贤进度 ----------
+       两种写法都要认：
+         累计纳贤<将名>*<n>，可领取奖励：<将名>、…、4选1，限完成1次   ← 指定武将，累计必得
+         累计纳贤*<n>，可领取奖励：A、B、…、6选1，限完成<k>次          ← 多选一（海纳百川 / 特惠精选）
+       多选一没有指定将名，得把候选拆开交给 haiyou，每个候选一条路线；
+       首项若是「xx福袋」，再展开成福袋里那份名单（特惠精选纳贤福袋 15 选 1）。 */
     const nx = [];
-    while ((mm = nxRe.exec(text))) nx.push({ item: clean(mm[1]), n: +mm[2] });
+    const haiyou = [];
+    const bags = {};
+    text.split(/[。\n]/).forEach((ln) => {
+      const b = /([^\s，,：:。*]*福袋)\s*[：:]\s*([^。]*?)[，,]?\s*任选其一/.exec(ln);
+      if (!b) return;
+      bags[clean(b[1])] = nqList(b[2]).map((x) => x.name).filter((x) => !/^大将军印/.test(x));
+    });
+    const nxRe = /累计纳贤\s*([^*，,。]*?)\s*\*(\d+)\s*[，,]\s*可领取奖励[：:]\s*([^。]*)/g;
+    while ((mm = nxRe.exec(text))) {
+      const who = clean(mm[1] || '');
+      const n = +mm[2];
+      const reward = mm[3];
+      if (who) { nx.push({ item: who, n }); continue; }
+      const capM = /限完成\s*(\d+)\s*次/.exec(reward);
+      const head = reward.replace(/[，,]\s*\d+\s*选\s*1[\s\S]*$/, '');
+      const raw = nqList(head).map((x) => x.name).filter((x) => !/^大将军印/.test(x));
+      const items = [];
+      raw.forEach((x) => { (bags[x] || [x]).forEach((y) => items.push(y)); });
+      if (items.length) haiyou.push({ n, items, cap: capM ? +capM[1] : 1 });
+    }
     if (nx.length) { model.shops.naxian = nx; rep.push(`纳贤进度：${nx.length} 项`); }
     else miss.push('纳贤进度');
+    model.haiyou = haiyou;
+    if (haiyou.length) {
+      rep.push(`多选一进度：${haiyou.map((h) => `${h.items.length}选1×${h.cap}（${h.n}令）`).join('、')}`);
+    }
 
     /* ---------- 5. 签筒 ---------- */
     const tubeTab = tbs.find((t) => /总签数/.test(t.head.join('')));
@@ -446,6 +473,24 @@ window.PARSER = (function () {
     });
     if (model.unsupported.length) rep.push(`未纳入精算：${model.unsupported.map((u) => u.name).join('、')}`);
 
+    /* ---------- 15.1 定向纳贤令 ----------
+       「特惠精选纳贤令」「谋杨奉纳贤令」只对指定池生效，和通用纳贤令不是一回事。
+       直接当纳贤令会高估返利（选池外武将时报价虚低），所以不折算，只标出来。 */
+    const directLing = new Set();
+    (text.match(/[\u4e00-\u9fa5]{2,6}纳贤令/g) || []).forEach((s) => {
+      const who = s.replace(/纳贤令$/, '').trim();
+      /* 剥掉「玩家可使用纳贤令」这类句子碎片，只留真正的池名前缀 */
+      if (!who || /使用|获得|购买|领取|消耗|专属|玩家|商城|可|或|该|在|于|的/.test(who)) return;
+      directLing.add(who);
+    });
+    if (directLing.size) {
+      const label = [...directLing].map((x) => x + '纳贤令').join(' / ');
+      if (!model.unsupported.some((u) => u.name === label)) {
+        model.unsupported.push({ name: label, section: '定向道具' });
+      }
+      rep.push(`定向纳贤令未折算：${[...directLing].join('、')}（只对指定池生效）`);
+    }
+
     /* ---------- 16. 纳贤价格机制 ---------- */
     const nxPrice = /每日前两次[^。]*?第一次仅消耗(\d+)元宝[，,]\s*第二次仅消耗(\d+)元宝/.exec(text);
     if (nxPrice) {
@@ -539,7 +584,9 @@ window.PARSER = (function () {
         freeCur: '纳贤令', freePer: 1,
         buys: buys.length ? buys : (old.buys || []),
         progress: (model.shops.naxian || []).map((x) => ({ item: x.item, n: x.n })),
-        haiyou: old.haiyou || [], table: old.table || [],
+        /* 多选一进度按本期解析结果走：解析不到就清空，
+           否则换期后会沿用上一期的海纳百川名单（名单里全是上期武将） */
+        haiyou: model.haiyou || [], table: old.table || [],
       });
     }
 

@@ -439,7 +439,7 @@ const E = {};
         push({
           key: 'haiyou:' + h.n, kind: 'progress', sysId: 'naxian', sysName: '海纳百川',
           target: name, basis: 'exact',
-          label: `纳贤令 ${h.n} 个（6选1，免费 ${free}，需买 ${buy}）`,
+          label: `纳贤令 ${h.n} 个（${h.items.length}选1，免费 ${free}，需买 ${buy}）`,
           chain: [
             { cur: '纳贤令', qty: h.n, note: `累计 ${h.n} 次，${h.items.length} 选 1` },
             { cur: '纳贤令', qty: buy, buy: true, note: `免费 ${free}` },
@@ -447,7 +447,7 @@ const E = {};
           ],
           curName: '纳贤令', curQty: h.n, freeQty: free, buyQty: buy,
           costEv: { yb: c.yb, uni: c.uni }, costMax: { yb: c.yb, uni: c.uni },
-          picks: c.picks, note: `${h.n} 令 6 选 1（限 ${h.cap} 次）`,
+          picks: c.picks, note: `${h.n} 令 ${h.items.length} 选 1（限 ${h.cap} 次）`,
         });
       });
     }
