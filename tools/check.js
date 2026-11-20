@@ -449,6 +449,23 @@ SAMPLES.forEach((sp) => {
   ok(`${sp.note} 到账够花`,
     plan.charge.yb + 1e-6 >= plan.netSpend,
     `到账 ${money(plan.charge.yb)} ≥ 净消费 ${money(plan.netSpend)}`);
+  {
+    /* 右栏「到账」和倍率表同为「总元宝」口径：可花本金 + 单笔档返的绑元。
+       有双倍箱的期，倍率表按理论最优选 B（绑元）、方案按目标需求选路线，
+       两者路线可能不同，总额也就不同——不强求相等，但到账必须自洽：
+       ① 到账 = 可花本金 + 返利；② 返利确实来自走的 A 路线的 gives；
+       ③ 返利没混进可花余额（否则「余」双算）。 */
+    const chg = plan.charge;
+    const arrival = chg.arrivalYb != null ? chg.arrivalYb : chg.yb;
+    const rebate = chg.rebateYb || 0;
+    const bindFromA = (chg.picks || []).filter((x) => !x.alt && x.t && x.t.gives)
+      .reduce((a, x) => a + (x.t.gives['绑定元宝'] || 0) * x.n, 0);
+    ok(`${sp.note} 右栏到账口径自洽`,
+      Math.abs(arrival - chg.yb - rebate) < 1e-6
+        && Math.abs(rebate - bindFromA) < 1e-6
+        && arrival + 1e-6 >= chg.yb,
+      `到账 ${money(arrival)} = 可花 ${money(chg.yb)} + 返利 ${money(rebate)}，A 路线给 ${money(bindFromA)}`);
+  }
   ok(`${sp.note} 逐项不缺料`,
     plan.audit.every((a) => a.total >= a.need - 1e-6),
     plan.audit.map((a) => `${a.label} ${a.total}/${a.need}`).join(' '));

@@ -367,6 +367,16 @@
     return Object.keys(t || {}).map((k) => `${cpnLabel(k)}×${E.fmt(t[k])}`).join(' · ');
   }
 
+  /* 到账口径：和充值倍率表「总元宝」一致 = 可花本金 + 单笔档返的绑定元宝（红包等折的）。
+     返利那部分在方案里已回冲需求（少买令），不能再算进可花余额，所以单独标注，
+     免得和「实付 / 本金余」对不上。老版本只显示本金，倍率表却显示总额，两个数字打架。 */
+  function arrivalText(chg) {
+    const yb = (chg && chg.yb) || 0;
+    const arr = Math.max((chg && chg.arrivalYb) || yb, yb);
+    const reb = Math.max(0, arr - yb);
+    return `到账 ${E.fmt(arr)} 元宝` + (reb > 0 ? `（本金 ${E.fmt(yb)} + 返利 ${E.fmt(reb)}）` : '');
+  }
+
   function renderPlan() {
     const names = [...state.selected];
     const sub = $('#planSub');
@@ -402,7 +412,7 @@
          <div class="k" style="margin-top:2px">${unb.length ? unb.map((u) => u.label + ' 本期买不到').join('、')
            : `${noRoute.length} 个目标本期无购买渠道`}</div>`
       : `<div class="v">¥${E.fmt(r.money)}</div>
-         <div class="k" style="margin-top:2px">到账 ${E.fmt(r.charge.yb)} 元宝</div>`;
+         <div class="k" style="margin-top:2px">${arrivalText(r.charge)}</div>`;
 
     const warns = [];
     if (noRoute.length) {
@@ -423,7 +433,7 @@
       lockHtml = `<div class="lockbar${over > 1 ? ' bad' : ''}">
         <span>${over > 1
           ? `充值已锁定，但还差 <b>${E.fmt(Math.round(over))}</b> 元宝才够买这些——再加一档，或去掉一个目标`
-          : `充值已锁定为这一组，到账 ${E.fmt(r.charge.yb)} 元宝，够花`}</span>
+          : `充值已锁定为这一组，${arrivalText(r.charge)}，可花余额够花`}</span>
         <button class="btn sm ghost" id="unlockCharge">解除锁定</button>
       </div>`;
     }
@@ -436,7 +446,7 @@
       <div class="tot">
         <div class="k">实付元宝</div>
         <div class="v">${money(r.netSpend)}</div>
-        <div class="k" style="margin-top:2px">券抵 ${E.fmt(r.couponSave)}${left > 1 ? ` · 余 ${money(left)}` : ''}</div>
+        <div class="k" style="margin-top:2px">券抵 ${E.fmt(r.couponSave)}${left > 1 ? ` · 可花余 ${money(left)}` : ''}</div>
       </div>
       ${lockHtml}
       ${warns.map((w) => `<div class="noroute">${w}</div>`).join('')}`;
@@ -636,7 +646,7 @@
           <tbody>${aud}</tbody>
         </table>
       </div>
-      <p class="sumline">充值 <b>¥${E.fmt(r.money)}</b>（${chgList}）· 到账 <b>${E.fmt(r.charge.yb)}</b> 元宝 · 实付 <b>${E.fmt(r.netSpend)}</b> · 抵价券省 <b>${E.fmt(r.couponSave)}</b>${r.charge.yb - r.netSpend > 1 ? ` · 余 <b>${E.fmt(r.charge.yb - r.netSpend)}</b>` : ''}</p>
+      <p class="sumline">充值 <b>¥${E.fmt(r.money)}</b>（${chgList}）· ${arrivalText(r.charge)} · 实付 <b>${E.fmt(r.netSpend)}</b> · 抵价券省 <b>${E.fmt(r.couponSave)}</b>${r.charge.yb - r.netSpend > 1 ? ` · 可花余 <b>${E.fmt(r.charge.yb - r.netSpend)}</b>` : ''}</p>
       ${r.budget > 0 ? `<p class="hint">逐日预算：按每天 <b>${E.fmt(r.budget)}</b> 元宝卡当日消费档，共 ${r.act} 天有花销。每日档（含每日重置的充值档）按天各结算一次，堆在一天只能吃一次。</p>` : ''}
       ${r.duobao && r.duobao.detail && r.duobao.detail.length ? `<p class="hint">夺宝兑换：本期返到 <b>${E.fmt(r.duobao.pool)}</b> 张夺宝券，打 ${r.duobao.detail.map((x) => `${x.pool} ${x.plays} 次（${x.coupons} 券）`).join(' + ')}，换回 ${Object.keys(r.duobao.got).map((k) => `${k}×${E.fmt(r.duobao.got[k])}`).join('、')}。券不打夺宝就作废。</p>` : ''}
       ${r.extras.length ? `<p class="hint">顺带拿到：${r.extras.map((x) => `${x.label}×${E.fmt(x.qty)}`).join(' · ')}</p>` : ''}`;
@@ -1010,6 +1020,7 @@
       </div>
       <div class="pick-foot">
         <span>已选 <b id="pickCount">${sel.size}</b> 个 · 合计 <b id="pickNeed">0</b> 元宝 · 球 <b id="pickBall">0</b>/${haveBall}</span>
+        <button class="btn sm ghost" id="pickOnly" title="保留主界面已选的目标，只把充值锁定成这一组">只锁充值 · 回主界面选将</button>
         <button class="btn sm ghost" id="pickCheap">选最便宜的 3 个</button>
         <button class="btn sm ghost" id="pickClear">清空</button>
         <button class="btn sm" id="pickGo" ${sel.size ? '' : 'disabled'}>用这一组生成方案</button>
@@ -1066,14 +1077,19 @@
       });
       refresh();
     };
-    $('#pickGo').onclick = () => {
-      state.selected = new Set(sel);
+    /* 两种进入方案的方式，充值都一样锁定成这组，区别只在目标从哪来：
+       pickGo  = 用弹窗里勾选的目标（覆盖主界面选择）
+       pickOnly = 保留主界面原有选择，回主界面自己勾武将 / 皮肤 */
+    const lockAndGo = (usePicked) => {
+      if (usePicked) state.selected = new Set(sel);
       state.lockCharge = p.picks.map((x) => ({ i: x.i, n: x.n, alt: !!x.alt }));
       state.rateView = 'table';
       $('#rateModal').classList.remove('on');
       renderSelected();
       renderPlan();
     };
+    $('#pickGo').onclick = () => lockAndGo(true);
+    $('#pickOnly').onclick = () => lockAndGo(false);
   }
 
   function renderDp() {
@@ -1176,7 +1192,7 @@
       if (rw) L.push(`  领：${rw}`);
     });
     L.push('');
-    L.push(`合计：充值 ¥${E.fmt(r.money)}，到账 ${E.fmt(r.charge.yb)} 元宝，实付 ${E.fmt(r.netSpend)}，抵价券省 ${E.fmt(r.couponSave)}`);
+    L.push(`合计：充值 ¥${E.fmt(r.money)}，${arrivalText(r.charge)}，实付 ${E.fmt(r.netSpend)}，抵价券省 ${E.fmt(r.couponSave)}`);
     if (r.budget > 0) L.push(`逐日预算：每天 ${E.fmt(r.budget)} 元宝，${r.act} 天有花销（每日重置档按天各结算一次）`);
     if (r.duobao && r.duobao.detail && r.duobao.detail.length) {
       L.push(`夺宝兑换：${r.duobao.pool} 张券 → ${r.duobao.detail.map((x) => `${x.pool}${x.plays}次`).join('+')}，换回 ${Object.keys(r.duobao.got).map((k) => `${k}×${E.fmt(r.duobao.got[k])}`).join('、')}`);

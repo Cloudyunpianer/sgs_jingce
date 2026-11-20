@@ -453,7 +453,10 @@ window.SCHED = (function () {
 
     let picks = [];
     let covered = 0;   /* 等效购买力累计（DP 约束用） */
-    let gotYb = 0;     /* 真实到账元宝 */
+    let gotYb = 0;     /* 真实到账元宝：本金 + 双倍箱绑元，可自由花的钱 */
+    let rebateYb = 0;  /* 单笔档额外返的绑定元宝（红包等）：倍率表口径里算「总元宝」，
+                          但方案里已回冲掉需求（少买令），不进 gotYb，否则双算。
+                          只在展示层用，凑出和充值倍率表一致的到账总价值。 */
 
     if (opts.fixed && opts.fixed.length) {
       opts.fixed.forEach((x) => {
@@ -467,6 +470,8 @@ window.SCHED = (function () {
         picks.push({ t, n: nb, alt: isAlt });
         const y = t.need + (isAlt ? (t.alt['绑定元宝'] || 0) : 0);
         covered += y * nb; gotYb += y * nb;
+        /* A 路线（道具包）的绑定元宝返利是红包折的，没进 gotYb */
+        if (!isAlt) rebateYb += (t.gives && t.gives['绑定元宝'] || 0) * nb;
       });
     } else {
 
@@ -555,6 +560,8 @@ window.SCHED = (function () {
           covered += rt.y * k;
           gotYb += rt.y * k;
           spentYb += rt.y * k;
+          /* 走道具包时给的绑定元宝（红包折的）没进 gotYb，单独累计给展示用 */
+          if (rt.route !== 'B') rebateYb += (t.gives && t.gives['绑定元宝'] || 0) * k;
         }
       }
       /* 直充兜底：1 元 = 100 元宝，无返利，保证任何需求都有解 */
@@ -618,7 +625,11 @@ window.SCHED = (function () {
       });
     }
 
-    return { picks: merged, money, yb: gotYb, gives };
+    /* arrivalYb = 倍率表口径的「总元宝」：可花本金 + 单笔档返的绑定元宝（红包等）。
+       注意它和 yb 不是一个东西——yb 只算能拿去下单的钱，返利那部分已经通过
+       backItems 回冲了需求（少买令），再加进可花余额就会双算。这里仅供展示，
+       让右栏「到账」和充值倍率表「总元宝」对得上。 */
+    return { picks: merged, money, yb: gotYb, arrivalYb: gotYb + rebateYb, rebateYb, gives };
   }
 
   /* ---------------- 七、总方案 ---------------- */
