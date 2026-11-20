@@ -411,10 +411,15 @@ const E = {};
         const free = Math.floor(freeOf(freeCur, [name]) / (sys.freePer || 1));
         const buy = Math.max(0, pr.n - free);
         const c = E.buyCost(sys, buy, ctx);
+        /* 纳贤的进度有两个池：这里是指定武将的「标准纳贤」，9.2 是全池共享的 k 选 1。
+           名字要分开，否则列表里全叫「纳贤」，看不出走的是哪条。 */
+        const sysName = sys.id === 'naxian' ? '标准纳贤' : sys.name;
         push({
-          key: 'prog:' + sys.id, kind: 'progress', sysId: sys.id, sysName: sys.name,
+          key: 'prog:' + sys.id, kind: 'progress', sysId: sys.id, sysName,
           target: name, basis: 'exact',
-          label: `${sys.unit} ${pr.n} 个（免费 ${free}，需买 ${buy}）`,
+          label: sys.id === 'naxian'
+            ? `${sys.unit} ${pr.n} 个（标准纳贤，指定 ${name}，免费 ${free}，需买 ${buy}）`
+            : `${sys.unit} ${pr.n} 个（免费 ${free}，需买 ${buy}）`,
           chain: [
             { cur: sys.unit, qty: pr.n, note: `累计达标即领；免费 ${free}` },
             { cur: sys.unit, qty: buy, buy: true, note: buy ? `${freeCur} 已抵扣` : '白嫖' },
@@ -428,7 +433,9 @@ const E = {};
       });
     });
 
-    /* ---- 9.2 海纳百川（累计达标，6 选 1） ---- */
+    /* ---- 9.2 通用纳贤（累计达标，k 选 1） ----
+       sysName 用来源小标题：海纳百川 / 特惠精选 / …，
+       和标准纳贤（9.1，指定武将必得）区分开，别都叫「海纳百川」。 */
     const nx = P.systems.find((s) => s.id === 'naxian');
     if (nx && nx.haiyou) {
       nx.haiyou.forEach((h) => {
@@ -436,10 +443,11 @@ const E = {};
         const free = freeOf('纳贤令', [name]);
         const buy = Math.max(0, h.n - free);
         const c = E.buyCost(nx, buy, ctx);
+        const poolName = h.pool || '通用纳贤';
         push({
-          key: 'haiyou:' + h.n, kind: 'progress', sysId: 'naxian', sysName: '海纳百川',
+          key: 'haiyou:' + (h.pool || '') + h.n, kind: 'progress', sysId: 'naxian', sysName: poolName,
           target: name, basis: 'exact',
-          label: `纳贤令 ${h.n} 个（${h.items.length}选1，免费 ${free}，需买 ${buy}）`,
+          label: `纳贤令 ${h.n} 个（${poolName} ${h.items.length}选1，免费 ${free}，需买 ${buy}）`,
           chain: [
             { cur: '纳贤令', qty: h.n, note: `累计 ${h.n} 次，${h.items.length} 选 1` },
             { cur: '纳贤令', qty: buy, buy: true, note: `免费 ${free}` },
@@ -447,7 +455,7 @@ const E = {};
           ],
           curName: '纳贤令', curQty: h.n, freeQty: free, buyQty: buy,
           costEv: { yb: c.yb, uni: c.uni }, costMax: { yb: c.yb, uni: c.uni },
-          picks: c.picks, note: `${h.n} 令 ${h.items.length} 选 1（限 ${h.cap} 次）`,
+          picks: c.picks, note: `${poolName}：${h.n} 令 ${h.items.length} 选 1（限 ${h.cap} 次）`,
         });
       });
     }

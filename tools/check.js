@@ -468,6 +468,61 @@ SAMPLES.forEach((sp) => {
     hy.forEach((h) => h.items.forEach((nm) => { if (!l.get(nm)) missing.push(nm); }));
     ok(`${sp.note} 福袋候选都在库`, missing.length === 0, missing.join('、') || '全在');
   }
+
+  {
+    /* 充值返利里的「绑定元宝 / 红包」必须进表。
+       以前 isCurrency 不认绑定元宝、toGives 又不认红包，600 档 giving 成空，
+       倍率算成 1.00×——等于「充 600 送 600 绑元」这半个本金白扔。 */
+    const bind = P.chargeTiers.filter((t) => (t.gives['绑定元宝'] || 0) > 0);
+    /* 只认「可领取奖励：…绑定元宝…」这种真返利；双倍箱的 alt 写的是「或绑元×N」，不算 */
+    const hasBindText = /可领取奖励[：:][^。]*绑定元宝/.test(txt);
+    ok(`${sp.note} 绑元返利进表`, !hasBindText || bind.length > 0,
+      bind.map((t) => `${t.need}档+${t.gives['绑定元宝']}`).join(' ') || '公告有绑元但表里没有');
+    /* 红包按概率表期望折，不能按 0 也不能按最低值 */
+    Object.keys(P.redPackets || {}).forEach((k) => {
+      const rp = P.redPackets[k];
+      ok(`${sp.note} ${k} 按期望 ${rp.ev} 折`, rp.ev >= rp.min && rp.ev <= rp.max && rp.ev > 0,
+        `区间 ${rp.min}~${rp.max}，期望 ${rp.ev}`);
+    });
+  }
+
+  {
+    /* 纳贤两套池子要分得开：
+       标准纳贤 = 指定武将（累计纳贤<将名>*N），通用纳贤 = 全池共享后 k 选 1。
+       以前两者都叫「海纳百川」，列表里看不出走的是哪条。 */
+    const nxS = P.systems.find((s) => s.id === 'naxian') || {};
+    const hy = nxS.haiyou || [];
+    ok(`${sp.note} 通用纳贤带来源池`,
+      hy.every((h) => h.pool && !/^标准/.test(h.pool)),
+      hy.map((h) => `${h.pool}:${h.items.length}选1`).join(' ') || '无通用纳贤');
+    const nm = [...l.keys()].find((x) => {
+      const t = l.get(x);
+      return (t.srcs || []).some((s) => s.sys === 'naxian');
+    });
+    if (nm) {
+      const ctxX = { days: P.meta.days, params: { qifuExtraKnot: P.params.qifuExtraKnot, ratio: 100 } };
+      const rs = EN.routesFor(l.get(nm), ctxX).filter((r) => !r.hidden);
+      const names = rs.map((r) => r.sysName);
+      ok(`${sp.note} 纳贤路线名不重样`, new Set(names).size === names.length, names.join(' / '));
+    }
+  }
+
+  {
+    /* 折算单价：纳贤令按标准标价 1000，不能被「每日前两次 200」的限购特惠拉低；
+       夺宝券按既定 60，不能被「888 元宝 15 券」这类限购礼包拆成 59 / 3.1 */
+    const u = R.unitTable();
+    ok(`${sp.note} 纳贤令折算价不打折`, !u.纳贤令 || u.纳贤令 >= 800, `unit=${u.纳贤令}`);
+    ok(`${sp.note} 夺宝券折算价按 60`, Math.round(u['狂欢夺宝券'] || 0) === 60, `unit=${u['狂欢夺宝券']}`);
+  }
+
+  {
+    /* 每日累计充值的门槛要能对上实际可充档位：
+       公告写 5888，游戏里只有 6000 这一档，折成 ¥58.88 会显示成 59。 */
+    (P.dailyCumCharge || []).forEach((t) => {
+      const hit = P.chargeTiers.some((c) => c.need === t.need);
+      ok(`${sp.note} 每日累计充值门槛对得上档位`, hit, `${t.need} 元宝（原始 ${t.raw || t.need}）`);
+    });
+  }
   {
     /* 结余券的「换灯 / 换玉」必须当期真有单买通道才算数：
        没有灯包、也没有礼盒时，那条路线是凭空捏的，残值应判 0。 */

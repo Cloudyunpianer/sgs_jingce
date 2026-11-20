@@ -32,6 +32,20 @@ window.RATES = (function () {
     const base = (window.SCHED && window.SCHED.UNIT) || {};
     const KEYS = ['盒', '祈福灯', '纳贤令', '锦绣', '狂欢夺宝券', '狂欢水晶球', '凡木签', '传世宝玉', '金瑶签', '如意签'];
     KEYS.forEach((k) => {
+      /* 纳贤令单独口径：每日前两次 200 / 500 元宝是限购特惠，一天只能各买一次，
+         不能当成整期的边际价——否则 100 令的价值会被压到 2 万，
+         充值返的那几个令也被算得一文不值（600 档的纳贤令价值直接缩水 5 倍）。
+         公告里「纳贤令礼包」才是标准标价（1000 元宝 / 个），折算以它为准。 */
+      if (k === '纳贤令') {
+        const std = cat.find((p) => /纳贤令礼包$/.test(p.name || '') && (p.gives[k] || 0) > 0);
+        out[k] = std ? std.price / std.gives[k] : (base[k] && base[k] >= 800 ? base[k] : 1000);
+        return;
+      }
+      /* 夺宝券也走标准口径：商城里「1111夺宝礼包 888 元宝 → 15 券」这种限购特惠
+         会把单价压到 59.2，11.16 期更夸张（777 元宝 → 250 券 = 3.1/张）。
+         拿它当整期边际价，券就跟白送一样，档位返的券全被算成零头。
+         折算按项目既定单价 60（SCHED.UNIT），不跟限购礼包走。 */
+      if (k === '狂欢夺宝券') { out[k] = base[k] || 60; return; }
       /* 只认「纯品类包」：组合礼包的价格没法拆到单一品类上 */
       const ps = cat.filter((p) => p.gives && p.gives[k] > 0
         && Object.keys(p.gives).filter((x) => x !== '绑定元宝').length === 1);
@@ -580,7 +594,14 @@ window.RATES = (function () {
     const fmt = (k) => (U[k] ? `${k} ${Math.round(U[k])}` : null);
     const line = ['盒', '祈福灯', '纳贤令', '锦绣', '狂欢夺宝券', '狂欢水晶球'].map(fmt).filter(Boolean);
     return [
-      `道具折算单价取「当期商城最低可得价」：${line.join('、')}。与方案里实际买入价同源，不是单买标价。`,
+      `道具折算单价取「当期商城最低可得价」：${line.join('、')}。与方案里实际买入价同源，不是单买标价。`
+        + '（纳贤令例外：每日前两次 200 / 500 是限购特惠，按「纳贤令礼包」标准标价折。）',
+      Object.keys(P.redPackets || {}).length
+        ? Object.keys(P.redPackets).map((k) => {
+          const r = P.redPackets[k];
+          return `${k}按概率表期望 ${E.fmt(r.ev)} 元宝折（区间 ${E.fmt(r.min)}~${E.fmt(r.max)}）`;
+        }).join('；') + '，开出的是绑定元宝，可直接抵消费。'
+        : '',
       Object.keys(P.coupons || {}).map((k) => {
         const c = P.coupons[k];
         return `${c.name}按面额 ${E.fmt(c.face)} × 可用率 ${Math.round(usableOf(c.face) * 100)}% = ${E.fmt(Math.round((c.face || 0) * usableOf(c.face)))}`;
@@ -588,7 +609,7 @@ window.RATES = (function () {
       '双倍箱是「道具包 / 绑元」二选一：两条路线分别算，取高的那条，绝不叠加。',
       '倍率 = 合计价值 ÷ 本金；1.00× 表示只拿回本金。充值倍率只看充值侧，端到端倍率还含消费返利。',
       '消费返利按「每天花到刚好够最高一档」估算，天数不超过活动天数；实际排程以右侧方案为准。',
-    ];
+    ].filter(Boolean);
   }
 
   return {

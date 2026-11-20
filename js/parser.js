@@ -60,6 +60,38 @@ window.PARSER = (function () {
     return String(str || '').split(/[、,，]/).map((x) => x.trim()).filter(Boolean).map(nq);
   }
 
+  /* 本期红包的期望值（元宝）。红包是随机开出的绑定元宝，
+     公告会给一张概率表，按期望折算比按最低值更接近长期成本。
+     由 scanRedPackets() 在 parse 开始时填好，toGives 直接查。 */
+  let RED_EV = {};
+
+  /* 红包概率表 → { 初冬红包: { ev, min, max, rows } }
+     表长这样（标题「**初冬红包**」下面）：
+       | 绑定元宝*3000 | 50% |                                        */
+  function scanRedPackets(ls) {
+    const out = {};
+    let cur = null;
+    ls.forEach((raw) => {
+      const line = raw.trim();
+      const h = /^\*\*(.+?)\*\*\s*$/.exec(line);
+      if (h) { cur = /红包$/.test(h[1].trim()) ? h[1].trim() : null; return; }
+      if (!cur) return;
+      const m = /绑定元宝\s*\*\s*(\d+)[^|]*\|\s*(\d+(?:\.\d+)?)\s*%/.exec(line);
+      if (!m) return;
+      const e = out[cur] = out[cur] || { name: cur, rows: [], ev: 0, min: 0, max: 0 };
+      e.rows.push({ yb: +m[1], pct: +m[2] });
+    });
+    Object.keys(out).forEach((k) => {
+      const e = out[k];
+      if (!e.rows.length) { delete out[k]; return; }
+      const w = e.rows.reduce((a, r) => a + r.pct, 0) || 1;
+      e.ev = Math.round(e.rows.reduce((a, r) => a + r.yb * r.pct, 0) / w);
+      e.min = Math.min(...e.rows.map((r) => r.yb));
+      e.max = Math.max(...e.rows.map((r) => r.yb));
+    });
+    return out;
+  }
+
   /* 奖励文案 → gives（只留可计算品类；券按面额拆 key；礼盒统一记「盒」）
      括号处理：自选箱「（A*1、B*2，2选1）」取第一项；券面额「（3000-2888）」保留。 */
   function toGives(str, opt) {
@@ -74,6 +106,18 @@ window.PARSER = (function () {
       const cp = CUR.coupon(it.name);
       if (cp) { g[cp.key] = (g[cp.key] || 0) + it.n; return; }
       if (/礼盒$/.test(it.name)) { g['盒'] = (g['盒'] || 0) + it.n; return; }
+      /* 绑定元宝是「能直接花掉的钱」，不是普通道具：
+         单笔充值 600 送 600 绑元，等于这一档实际只花了一半本金。
+         以前被 isCurrency 挡掉（它不在品类表里），600 档 giving 成空。 */
+      if (/^绑定元宝$/.test(CUR.canon(it.name))) {
+        g['绑定元宝'] = (g['绑定元宝'] || 0) + it.n;
+        return;
+      }
+      /* 红包：随机开出绑定元宝，按本期概率表的期望值折 */
+      if (/红包$/.test(it.name)) {
+        const rp = RED_EV[it.name];
+        if (rp && rp.ev > 0) { g['绑定元宝'] = (g['绑定元宝'] || 0) + rp.ev * it.n; return; }
+      }
       const c = CUR.canon(it.name);
       if (CUR.isCurrency(it.name)) { g[c] = (g[c] || 0) + it.n; return; }
       if (/纳贤令$/.test(it.name)) { g['纳贤令'] = (g['纳贤令'] || 0) + it.n; return; }
@@ -101,8 +145,12 @@ window.PARSER = (function () {
       coupons: {}, chargeTiers: [], cumCharge: [], dailyTiers: [], cumSpend: [],
       dailyCumCharge: [],
       bundles: [], freeGains: [], boughtGains: [], directSales: [],
-      unsupported: [], curLabel: {}, naxianDaily: [],
+      unsupported: [], curLabel: {}, naxianDaily: [], redPackets: {},
     };
+
+    /* 红包概率表要先扫出来：后面 toGives 遇到「xx红包」要按期望折成绑元 */
+    RED_EV = scanRedPackets(ls);
+    model.redPackets = RED_EV;
 
     const tbs = tables(ls);
     const secs = sections(ls);
@@ -191,11 +239,15 @@ window.PARSER = (function () {
     }
 
     /* ---------- 4. 纳贤进度 ----------
-       两种写法都要认：
-         累计纳贤<将名>*<n>，可领取奖励：<将名>、…、4选1，限完成1次   ← 指定武将，累计必得
-         累计纳贤*<n>，可领取奖励：A、B、…、6选1，限完成<k>次          ← 多选一（海纳百川 / 特惠精选）
-       多选一没有指定将名，得把候选拆开交给 haiyou，每个候选一条路线；
-       首项若是「xx福袋」，再展开成福袋里那份名单（特惠精选纳贤福袋 15 选 1）。 */
+       两类纳贤要分开，不能混成一个名字：
+
+       ① 标准纳贤 —— 「累计纳贤<将名>*<n>，…，4选1」
+          指定池子，抽够次数必得那位武将（含 3 个陪跑），进度按武将各算各的。
+       ② 通用纳贤 —— 「累计纳贤*<n>，可领取奖励：A、B…，k选1，限完成m次」
+          没有指定将名，进度是全池共享的，达标后从候选里挑一个。
+          这一类的来源要看所在小标题：海纳百川 / 特惠精选，各自的池子和限次都不一样。
+
+       多选一的首项若是「xx福袋」，再展开成福袋里那份名单（特惠精选纳贤福袋 15 选 1）。 */
     const nx = [];
     const haiyou = [];
     const bags = {};
@@ -204,24 +256,43 @@ window.PARSER = (function () {
       if (!b) return;
       bags[clean(b[1])] = nqList(b[2]).map((x) => x.name).filter((x) => !/^大将军印/.test(x));
     });
+    /* 按 **小标题** 切段：多选一的来源就是它所在那一段的标题 */
+    const nxSegs = [];
+    let nxCur = { head: '', body: [] };
+    ls.forEach((raw) => {
+      const line = raw.trim();
+      const h = /^\*\*(.+?)\*\*\s*$/.exec(line);
+      if (h) { nxSegs.push(nxCur); nxCur = { head: clean(h[1]), body: [] }; return; }
+      nxCur.body.push(line);
+    });
+    nxSegs.push(nxCur);
+
     const nxRe = /累计纳贤\s*([^*，,。]*?)\s*\*(\d+)\s*[，,]\s*可领取奖励[：:]\s*([^。]*)/g;
-    while ((mm = nxRe.exec(text))) {
-      const who = clean(mm[1] || '');
-      const n = +mm[2];
-      const reward = mm[3];
-      if (who) { nx.push({ item: who, n }); continue; }
-      const capM = /限完成\s*(\d+)\s*次/.exec(reward);
-      const head = reward.replace(/[，,]\s*\d+\s*选\s*1[\s\S]*$/, '');
-      const raw = nqList(head).map((x) => x.name).filter((x) => !/^大将军印/.test(x));
-      const items = [];
-      raw.forEach((x) => { (bags[x] || [x]).forEach((y) => items.push(y)); });
-      if (items.length) haiyou.push({ n, items, cap: capM ? +capM[1] : 1 });
-    }
-    if (nx.length) { model.shops.naxian = nx; rep.push(`纳贤进度：${nx.length} 项`); }
+    nxSegs.forEach((seg) => {
+      const bodyText = seg.body.join('\n');
+      if (!/累计纳贤/.test(bodyText)) return;
+      nxRe.lastIndex = 0;
+      while ((mm = nxRe.exec(bodyText))) {
+        const who = clean(mm[1] || '');
+        const n = +mm[2];
+        const reward = mm[3];
+        /* 有将名 → 标准纳贤：抽这位武将的专属池 */
+        if (who) { nx.push({ item: who, n, pool: seg.head || '纳贤' }); continue; }
+        /* 无将名 → 通用纳贤（k 选 1），来源取小标题 */
+        const capM = /限完成\s*(\d+)\s*次/.exec(reward);
+        const head = reward.replace(/[，,]\s*\d+\s*选\s*1[\s\S]*$/, '');
+        const raw = nqList(head).map((x) => x.name).filter((x) => !/^大将军印/.test(x));
+        const items = [];
+        raw.forEach((x) => { (bags[x] || [x]).forEach((y) => items.push(y)); });
+        const pool = seg.head || '通用纳贤';
+        if (items.length) haiyou.push({ n, items, cap: capM ? +capM[1] : 1, pool });
+      }
+    });
+    if (nx.length) { model.shops.naxian = nx; rep.push(`标准纳贤：${nx.length} 位武将`); }
     else miss.push('纳贤进度');
     model.haiyou = haiyou;
     if (haiyou.length) {
-      rep.push(`多选一进度：${haiyou.map((h) => `${h.items.length}选1×${h.cap}（${h.n}令）`).join('、')}`);
+      rep.push(`通用纳贤（k选1）：${haiyou.map((h) => `${h.pool} ${h.items.length}选1×${h.cap}（${h.n}令）`).join('、')}`);
     }
 
     /* ---------- 5. 签筒 ---------- */
@@ -696,10 +767,32 @@ window.PARSER = (function () {
     /* ---- 充值 / 消费 ---- */
     P.chargeTiers = (model.chargeTiers || []).slice();
     P.cumCharge = (model.cumCharge || []).slice();
-    P.dailyCumCharge = (model.dailyCumCharge || []).slice();
+    /* 每日累计充值的门槛要吸附到「实际能充的档位」。
+       公告常写 5888 元宝这种数，但充值档只有 6000 这一档，
+       5888 折成人民币是 58.88，显示出来就变成 ¥59 —— 游戏里根本没有 59 元。
+       向上取最近能充到的档（5888 → 6000 = ¥60），判定口径不变
+       （档位金额都是固定面额，不存在「充 5900 够 5888 但不够 6000」的情形）。 */
+    const chNeeds = P.chargeTiers.map((x) => x.need).filter((n) => n > 0).sort((a, b) => a - b);
+    P.dailyCumCharge = (model.dailyCumCharge || []).map((t) => {
+      const up = chNeeds.find((n) => n >= t.need);
+      if (!up || up === t.need) return t;
+      return Object.assign({}, t, {
+        raw: t.need, need: up,
+        note: `${t.note || ''}（公告门槛 ${t.need}，实际按 ${up} 元宝档 / ¥${up / 100} 判定）`,
+      });
+    });
+    if (P.dailyCumCharge.some((t) => t.raw)) {
+      log.push(`每日累计充值门槛已吸附到实际档位：${P.dailyCumCharge
+        .filter((t) => t.raw).map((t) => `${t.raw}→${t.need}`).join('、')}`);
+    }
     P.dailyTiers = (model.dailyTiers || []).slice();
     P.cumSpend = (model.cumSpend || []).slice();
+    P.redPackets = model.redPackets || {};
     if (!P.chargeTiers.length) log.push('本期末解析到充值档位 → 置空');
+    Object.keys(P.redPackets).forEach((k) => {
+      const r = P.redPackets[k];
+      log.push(`红包：${k} 按期望 ${r.ev} 元宝折（区间 ${r.min}~${r.max}）`);
+    });
 
     /* ---- 商城礼包 ---- */
     P.extraPacks = (model.bundles || [])
