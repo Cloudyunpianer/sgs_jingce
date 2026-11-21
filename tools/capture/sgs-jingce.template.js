@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         吾亦能善算谋划
 // @namespace    https://github.com/Cloudyunpianer/sgs_jingce
-// @version      2.2.0
-// @description  在三国杀官网页面内嵌完整精测程序，hook 后台 JSON，一键导入本期活动并精测。配套 sgs_jingce。
+// @version      2.3.0
+// @description  在三国杀官网/网页版游戏页内嵌完整精测程序，抓包+扫页面双通道找公告，一键导入本期活动并精测。配套 sgs_jingce。
 // @author       sgs_jingce
 // @match        *://x.sanguosha.com/*
 // @match        *://*.sanguosha.com/*
@@ -37,11 +37,12 @@
 
   // ----------------------------- 配置区 -------------------------------------
   var CAPTURE = {
-    // URL 命中任一关键字就抓取（不区分大小写）。留空数组 [] 则抓所有 JSON。
-    // TODO: 换成真实活动接口路径
-    urlPatterns: ['activity', 'news', 'event', 'config'],
+    /* 默认抓所有 JSON 响应：网页版游戏(web.sanguosha.com)的活动接口地址
+       未必带 activity/news 等关键字，关键字过滤会把公告正文漏掉。
+       抓全再由「公告特征体检」统一筛选，只留真正像公告的数据。 */
+    urlPatterns: [],
     minSize: 200,
-    maxKeep: 50
+    maxKeep: 80
   };
 
   /* JSON → 公告文本的转换钩子。
@@ -85,15 +86,25 @@
         preview: text.length > 3000 ? text.slice(0, 3000) + '\n…（预览截断）' : text,
         activity: guessActivity(url)
       };
+      /* 抓到就体检：只有真公告才放进候选、才自动填文本框；
+         福利/礼包等配置 JSON 仍进列表(打上"配置"标记)供排查，但不覆盖文本、不当导入源。 */
+      var nt = toNoticeText(item);
+      var chk = looksLikeNotice(nt);
+      item.isNotice = chk.ok;
+      item.hit = chk.hit || 0;
       captured.unshift(item);
       if (captured.length > CAPTURE.maxKeep) captured.length = CAPTURE.maxKeep;
-      selected = 0;
-      render();
-      /* 抓到新数据就自动把转换后的公告文本填进文本框（若面板已建），用户能立刻看到/改 */
       var ta = document.getElementById('sgs-jc-text');
-      if (ta) ta.value = toNoticeText(item);
-      log('抓到 #' + item.id + ' ' + item.method + ' ' + prettyBytes(item.size));
-      setStatus('抓包 ' + captured.length + ' 条 · 最新 #' + item.id);
+      if (chk.ok) {
+        selected = 0;
+        if (ta && !(ta.value || '').trim()) ta.value = nt;
+      } else if (selected < 0) {
+        selected = 0;
+      }
+      render();
+      log('抓到 #' + item.id + ' ' + item.method + ' ' + prettyBytes(item.size) +
+          (chk.ok ? ' ✓公告' : ' · 配置/非公告'));
+      setStatus('抓包 ' + captured.length + ' 条' + (chk.ok ? ' · 最新 #' + item.id + ' 是公告' : ' · 最新是配置数据'));
     } catch (e) { log('抓取处理异常：' + e.message); }
   }
 
@@ -186,19 +197,50 @@
     return { ok: false, why: '未检测到公告特征（充值档位/纳贤进度/奖励表格等），只有 ' + hit + ' 项弱特征' };
   }
 
-  /* 从抓包里自动挑「最像本期活动公告」的一条：
-     URL 命中活动/公告类关键字加权，其次正文越长越可能是真公告。 */
+  /* 公告特征评分：命中越多公告句式/表格，越可能是真公告。
+     替代旧的「URL 关键字 + 文本长度」——后者会把超长的配置 JSON 误当公告。 */
+  function noticeScore(text) {
+    var chk = looksLikeNotice(text);
+    return chk.ok ? chk.hit : 0;
+  }
+
+  /* 从抓包里挑「最像本期公告」的一条，按公告特征命中数排序。
+     同时给每条打上 isNotice/hit，供列表显示 ✓公告。 */
   function pickBestCapture() {
     if (!captured.length) return null;
-    var best = null, bestScore = -1;
+    var best = null, bestScore = 0;
     captured.forEach(function (it) {
       var txt = '';
       try { txt = toNoticeText(it) || ''; } catch (e) {}
-      var score = txt.length >= 100 ? txt.length : 0;
-      if (/activity|news|notice|event|gonggao|bulletin/i.test(it.url)) score += 1000000;
-      if (score > bestScore) { bestScore = score; best = it; }
+      var sc = noticeScore(txt);
+      it.isNotice = sc > 0;
+      it.hit = sc;
+      if (sc > bestScore) { bestScore = sc; best = it; }
     });
-    return bestScore > 0 ? best : null;
+    return best;
+  }
+
+  /* 从页面可见文本里提取公告正文——网页版游戏的公告常是 HTML 渲染，
+     不一定走 JSON 接口。遍历文档与同源 iframe 的 innerText，按特征评分取最优。
+     精测台自身的 iframe(sgs-jc-frame)要排除，否则会把自己的界面文字当公告。 */
+  function scanPageNotice() {
+    var best = { text: '', score: 0 };
+    function scanDoc(doc, tag) {
+      try {
+        var t = (doc.body && (doc.body.innerText || doc.body.textContent)) || '';
+        var sc = noticeScore(t);
+        if (sc > best.score) best = { text: t, score: sc, tag: tag };
+      } catch (e) {}
+    }
+    scanDoc(document, '主页面');
+    try {
+      var frames = document.querySelectorAll('iframe');
+      for (var i = 0; i < frames.length; i++) {
+        if (frames[i].id === 'sgs-jc-frame') continue;
+        try { scanDoc(frames[i].contentDocument, 'iframe[' + i + ']'); } catch (e) {}
+      }
+    } catch (e) {}
+    return best.score > 0 ? best : null;
   }
 
   // --------------------------- 导入到精测 -----------------------------------
@@ -229,19 +271,27 @@
       if (importToJingce(manual, false)) setStatus('✓ 已导入手动文本 · ' + prettyBytes(manual.length));
       return;
     }
-    // 2) 否则从抓包里自动挑最合适的（严格体检）
+    // 2) 抓包里按公告特征评分，挑最像公告的一条
     var it = pickBestCapture();
-    if (!it) {
-      log('未抓到可用的公告数据：请打开官网【活动公告详情页】刷新，让页面加载公告正文');
-      setStatus('未抓到公告正文 — 请到公告详情页刷新抓取');
-      openDetail(true);
+    if (it) {
+      var text = toNoticeText(it);
+      if (ta) ta.value = text;
+      selected = captured.indexOf(it);
+      render();
+      if (importToJingce(text, true)) setStatus('✓ 已导入抓包 #' + it.id + '（命中' + it.hit + '项公告特征）');
       return;
     }
-    var text = toNoticeText(it);
-    if (ta) ta.value = text;
-    selected = captured.indexOf(it);
-    render();
-    if (importToJingce(text, true)) setStatus('✓ 已导入 #' + it.id + ' · ' + prettyBytes(it.size));
+    // 3) 抓包没有 → 扫页面可见文本（网页版游戏的公告常是 HTML 渲染，不走 JSON）
+    var pg = scanPageNotice();
+    if (pg) {
+      if (ta) ta.value = pg.text;
+      if (importToJingce(pg.text, true)) setStatus('✓ 已从' + (pg.tag || '页面') + '文本导入（命中' + pg.score + '项特征）');
+      return;
+    }
+    // 4) 都没有 → 明确指引：要把公告正文"显示出来"
+    log('未发现公告正文：请在当前游戏页点开本期【活动/充值/纳贤】公告，让公告文字显示在页面上，或手动粘贴公告 md');
+    setStatus('未找到公告正文 — 请点开活动公告或粘贴公告文本');
+    openDetail(true);
   }
 
   window.addEventListener('message', function (e) {
@@ -328,7 +378,8 @@
     'padding:6px 12px;cursor:pointer;font-size:12px;}',
     '#sgs-jc-detail .btn:hover{background:#3a3d47;}',
     '#sgs-jc-list{display:flex;gap:6px;flex-wrap:wrap;max-height:34px;overflow:auto;flex:1;min-width:120px;}',
-    '.jc-item{padding:3px 9px;border:1px solid #3a3c46;border-radius:6px;cursor:pointer;font-size:11px;color:#aeb2bc;white-space:nowrap;}',
+    '.jc-item{padding:3px 9px;border:1px solid #3a3c46;border-radius:6px;cursor:pointer;font-size:11px;color:#8b90a0;white-space:nowrap;}',
+    '.jc-item.notice{border-color:#3f7d5a;color:#8fdcb0;}',
     '.jc-item.sel{background:#2b3358;border-color:#6a7ce0;color:#fff;}',
     '#sgs-jc-text{width:100%;height:58px;background:#101114;color:#b9d4b0;border:1px solid #3a3b40;',
     'border-radius:6px;padding:7px;font:11px/1.45 monospace;resize:vertical;}',
@@ -404,10 +455,14 @@
     if (p) { p.classList.remove('hidden'); p.style.display = ''; }
     var l = document.getElementById(LAUNCHER_ID);
     if (l) l.style.display = 'none';
-    // 面板首次打开时，若之前已抓到数据，把最新一条填进文本框
+    // 面板首次打开时，把评分最高的真公告填进文本框（没有就留空，不塞配置数据）
     var ta = document.getElementById('sgs-jc-text');
-    if (ta && !ta.value && captured.length) ta.value = toNoticeText(captured[0]);
-    setStatus(captured.length ? ('抓包 ' + captured.length + ' 条，点上方按钮一键导入') : '等待抓包或粘贴公告');
+    var best = pickBestCapture();
+    if (ta && !ta.value && best) { ta.value = toNoticeText(best); selected = captured.indexOf(best); render(); }
+    var notices = captured.filter(function (x) { return x.isNotice; }).length;
+    setStatus(captured.length
+      ? ('抓包 ' + captured.length + ' 条' + (notices ? ('，其中 ' + notices + ' 条公告') : '，暂无公告数据'))
+      : '等待抓包或粘贴公告');
   }
 
   function closePanel() {
@@ -489,9 +544,10 @@
     list.innerHTML = '';
     captured.forEach(function (it, i) {
       var d = document.createElement('div');
-      d.className = 'jc-item' + (i === selected ? ' sel' : '');
-      d.textContent = '#' + it.id + ' ' + it.method + ' ' + prettyBytes(it.size);
-      d.title = it.url;
+      d.className = 'jc-item' + (i === selected ? ' sel' : '') + (it.isNotice ? ' notice' : '');
+      var tag = it.isNotice ? '✓公告' : '配置';
+      d.textContent = tag + ' #' + it.id + ' ' + it.method + ' ' + prettyBytes(it.size);
+      d.title = it.url + '\n' + (it.isNotice ? ('公告特征 ' + it.hit + ' 项') : '非公告数据（福利/礼包/配置等）');
       d.onclick = function () {
         selected = i;
         var ta = document.getElementById('sgs-jc-text');
