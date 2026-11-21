@@ -1391,14 +1391,10 @@
     $('#btnApply').disabled = !report.length;
   }
 
-  function doApply() {
-    const ta = document.getElementById('jsonEdit');
-    if (!ta) return;
-    let model;
-    try { model = JSON.parse(ta.value); } catch (e) {
-      alert('JSON 格式有误：' + e.message);
-      return;
-    }
+  /* 把一份 model 应用到本期并重渲染。
+     doApply（手动导入）与外部 importText（油猴脚本内嵌调用）共用这一条路径，
+     保证两条入口行为完全一致，不会出现「手动能用、脚本导入结果不一样」。 */
+  function applyModel(model) {
     PARSER.apply(model);
     P.meta.imported = true;
     saveLocal();
@@ -1419,7 +1415,43 @@
     renderCouponStock();
     syncTargets();
     renderCats(); renderWays(); renderGrid(); renderSelected(); renderPlan();
-    $('#importModal').classList.remove('on');
+    const modal = $('#importModal');
+    if (modal) modal.classList.remove('on');
+  }
+
+  function doApply() {
+    const ta = document.getElementById('jsonEdit');
+    if (!ta) return;
+    let model;
+    try { model = JSON.parse(ta.value); } catch (e) {
+      alert('JSON 格式有误：' + e.message);
+      return;
+    }
+    applyModel(model);
+  }
+
+  /* 外部数据导入接口：输入公告文本（或已解析的 model），自动 parse + apply。
+     供油猴脚本内嵌精测程序时调用（见 tools/capture/）。
+     返回 { ok, report, error }，便于调用方在界面上反馈。 */
+  function importText(input) {
+    try {
+      let model;
+      if (typeof input === 'string') {
+        const parsed = PARSER.parse(input);
+        model = parsed.model;
+        if (!parsed.report || !parsed.report.length) {
+          return { ok: false, error: '未从文本中识别出可解析的活动表格' };
+        }
+      } else if (input && typeof input === 'object') {
+        model = input;
+      } else {
+        return { ok: false, error: '导入内容必须是公告文本或 model 对象' };
+      }
+      applyModel(model);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) };
+    }
   }
 
   function recalc() {
@@ -1430,6 +1462,23 @@
     renderGrid();
     renderPlan();
   }
+
+  /* 外部导入接口（油猴脚本内嵌时用）。window.__SGS_IMPORT__(公告文本 或 model) */
+  window.__SGS_IMPORT__ = importText;
+
+  /* 通过 postMessage 导入：油猴脚本 → iframe 里的精测程序。
+     约定消息格式：{ __sgsCapture: 1, type: 'import', text: '<公告文本>' }
+     校验标记字段，避免误处理页面上其它 postMessage。 */
+  window.addEventListener('message', function (e) {
+    const d = e.data;
+    if (!d || d.__sgsCapture !== 1 || d.type !== 'import') return;
+    const r = importText(d.text);
+    try {
+      if (e.source && e.source.postMessage) {
+        e.source.postMessage({ __sgsCapture: 1, type: 'importResult', ok: r.ok, error: r.error || null }, '*');
+      }
+    } catch (err) { /* 跨源 postMessage 失败不影响导入本身 */ }
+  });
 
   document.addEventListener('DOMContentLoaded', init);
   window.__state = state;

@@ -1,56 +1,75 @@
-# 后台数据抓取（油猴脚本）
+# 油猴内嵌精测台（抓包 + 导入）
 
-一个 Tampermonkey（油猴）脚本：打开三国杀官网活动后台页面，自动 hook 页面请求，把返回的活动 JSON 抓到悬浮小窗里预览，一键复制或下载。
+一个 Tampermonkey（油猴）脚本，把**完整精测程序**嵌进三国杀官网页面里运行：hook 后台请求抓到活动 JSON，转成公告文本，一键导进内嵌的精测程序，当场出结果。
 
-**脚本本身放在项目 `tools/capture/sgs-capture.user.js`，随仓库做版本管理。** 脚本只在浏览器里抓包和导出，不写磁盘、不连本地服务、不碰 git——抓下来的数据由你自己放进 `samples/` 再导入精测工具。
+**你要版本管理的是脚本文件本身**（`tools/capture/` 下的源码和产物都随仓库提交）。脚本不写磁盘、不连本地服务、不碰 git。
 
-## 为什么这么做
+## 一、文件与构建
 
-浏览器的油猴脚本运行在沙箱里，抓到数据后最省事的方式就是直接在页面上预览，并复制到剪贴板 / 下载成文件。不需要本地服务中转，也不用让脚本去提交 git。git 版本管理的是这个 `.js` 脚本文件本身，跟抓取动作无关。
-
-| 你做的事 | 脚本做的事 |
+| 文件 | 作用 |
 | --- | --- |
-| 安装脚本，打开活动后台页面 | hook fetch / XHR，抓 JSON |
-| 在小窗点一条 | 预览该条 JSON |
-| 点「复制 JSON」/「下载 JSON」 | 导出完整数据 |
+| `sgs-jingce.template.js` | 油猴脚本**源码模板**（改这里） |
+| `embedded.html` | 精测程序的单文件版（HTML+CSS+9个JS 全内联），构建产物 |
+| `sgs-jingce.user.js` | **最终安装版**（把 embedded.html 内联进模板，378KB），构建产物 |
+| `build-embedded.js` | 构建脚本，一条命令重新生成上面两个产物 |
 
-## 一、安装
+改了 `index.html` / `style.css` / `js/*.js` 或油猴模板后，重跑：
 
-1. 浏览器装 Tampermonkey（或 Violentmonkey）扩展。
-2. 把 `tools/capture/sgs-capture.user.js` 拖进浏览器安装，或复制到扩展的「新建脚本」里。
-3. 打开三国杀官网 `https://x.sanguosha.com/` 的任意活动后台页面，右上角出现「三国杀精测 · 抓取小窗」。
+```bash
+node tools/capture/build-embedded.js
+```
 
-## 二、抓取与导出
+它会：① 把精测程序打包成 `embedded.html`；② 把该文件内联进模板生成 `sgs-jingce.user.js`。
 
-- 页面加载后脚本自动监听所有 `fetch` / `XHR`，把命中规则的 JSON 响应列进小窗（显示方法、URL、大小）。
-- 点一条在下方文本框预览（超过 8000 字符会截断预览，但复制/下载是完整数据）。
-- 按钮：
-  - **复制选中**：把该条 payload 格式化后复制到剪贴板。
-  - **下载选中**：把该条 payload 存成 `活动名_时间戳.json`。
-  - **全部下载**：所有抓到的 payload 打包成一个 `sgs_capture_all_日期.json`，每条带 `_meta`（来源 URL / 方法 / 时间 / 活动名）。
-  - **清空**：清掉小窗里的记录。
-- 小窗标题栏可拖动、可最小化、可关闭；菜单命令「显示小窗」可再次唤出。
+> 为什么要把整个精测程序内联进油猴脚本：油猴运行在 `https://x.sanguosha.com`，浏览器不允许它 fetch 本地 `file://` 文件；而精测程序是纯前端静态页。内联成自包含字符串、用 iframe `srcdoc` 承载，是让它"在油猴里跑"又不依赖本地服务的唯一自包含方式。
 
-## 三、改成抓真实接口（关键）
+## 二、安装与使用
 
-脚本顶部的 `CAPTURE.urlPatterns` 目前是**可配置占位**：
+1. 浏览器装 Tampermonkey / Violentmonkey。
+2. 把 `tools/capture/sgs-jingce.user.js` 拖进浏览器安装。
+3. 打开三国杀官网活动后台页面，出现「三国杀精测 · 内嵌精测台」小窗：
+   - **下半部分**：完整精测程序（选将、倍率表、每日方案等，功能与本地打开一致）。
+   - **上半工具条**：抓包列表 + 公告文本框 + 导入/复制/下载按钮。
+4. 流程：页面加载后自动 hook `fetch` / `XHR` → 命中规则的 JSON 进抓包列表 → 点一条会把它转成公告文本填进文本框（可直接改）→ 点「导入选中到精测」。
+   - 精测程序收到后自动 `PARSER.parse` + `apply`，界面当场刷新出本期结果。
+   - 也可以绕过抓包：直接在文本框粘贴官网公告 md，点「导入下方文本」。
+5. 小窗可拖动、可缩放（右下角）、可最小化/关闭；菜单命令「显示内嵌精测台」可唤回。
+
+## 三、改成抓真实接口（拿到样例后要做的）
+
+两处可配置，都在模板 `sgs-jingce.template.js` 顶部：
 
 ```js
 var CAPTURE = {
   urlPatterns: ['activity', 'news', 'event', 'config'],  // URL 命中任一关键字即抓取
-  minSize: 200,   // 小于该字节数的响应忽略
-  maxKeep: 50     // 小窗最多保留多少条
+  minSize: 200,   // 小于该字节数的响应忽略（默认 200，别把真实小响应过滤掉）
+  maxKeep: 50
 };
+
+var TRANSFORM = null;  // JSON → 公告文本钩子
 ```
 
-等你提供真实接口地址和一份 JSON 样例后，把 `urlPatterns` 换成真实接口路径关键字（例如 `/api/activity/detail`、`getActivityConfig`）即可精准抓取，其余不用动。留空数组 `[]` 表示抓所有 JSON 响应。
+- **接口地址**：把 `urlPatterns` 换成真实接口路径关键字，例如 `/api/activity/detail`、`getActivityConfig`。留空数组 `[]` 抓所有 JSON。
+- **JSON → 公告文本**：默认走通用展平 `jsonToText()`（找 `content/markdown/md/text/...` 字段，或整对象转文本）。拿到真实 JSON 样例后，把 `TRANSFORM` 写成精准转换，例如：
 
-> 如果接口返回的不是标准 JSON（比如 JSONP、外面包了一层回调），需要在脚本 `ingest()` 里加一段解包逻辑。拿到样例后按需调整。
+  ```js
+  var TRANSFORM = function (payload, url) {
+    return payload.data.activityNotice; // 按真实结构调整
+  };
+  ```
 
-## 四、抓下来的数据怎么用
+  返回的是**公告 markdown 文本**，交给精测程序的 `PARSER.parse`。若接口直接返回的就是公告 md 字符串，可留默认。
 
-下载/复制出来的是接口原始 payload。要用进精测工具，需要转成它能识别的数据——目前工具的「导入本期 md」吃的是官网公告 markdown，**还不能直接吃这个 JSON**。JSON → 本期数据的转换层需要按真实接口结构来写，拿到样例后再补。这一步不影响抓取与导出本身。
+改完模板后记得重跑 `node tools/capture/build-embedded.js` 重新生成安装版。
 
-## 五、版本管理
+## 四、验证过的链路
 
-脚本文件 `tools/capture/sgs-capture.user.js` 随本仓库提交管理。抓下来的临时 JSON 数据不建议提交；如果要留样例，放到 `samples/` 下并确认内容已脱敏（无个人/账号信息）。
+- `embedded.html` 直接打开：133 个目标卡片正常渲染；`__SGS_IMPORT__(公告文本)` 导入真实小雪样本，充值档与活动信息正确更新，零 JS 错误。
+- 油猴脚本注入到模拟后台页：小窗 + iframe 渲染、hook 生效、抓包 → 点导入 → postMessage → 内嵌精测返回「已导入并刷新」，活动信息从旧期更新为新期，零 JS 错误。
+- 项目回归 304 项全绿。
+
+## 五、说明
+
+- 精测程序在 iframe（`sandbox="allow-scripts allow-same-origin"`）里跑，与官网页面的 DOM/CSS 隔离，互不干扰。
+- 数据注入走 `postMessage`，消息带 `__sgsCapture:1` 标记，精测程序校验后才处理，避免误收页面其它消息。
+- 抓下来的临时数据不建议提交；要留样例放到 `samples/` 并确认无账号等敏感信息。

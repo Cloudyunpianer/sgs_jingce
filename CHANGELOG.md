@@ -10,7 +10,7 @@
 
 ### 新增
 
-- **后台数据抓取油猴脚本**：新增 `tools/capture/sgs-capture.user.js`（Tampermonkey）。hook 页面 fetch / XHR，命中 `CAPTURE.urlPatterns` 的 JSON 响应进悬浮小窗：点一条预览，一键「复制选中」/「下载选中」，或「全部下载」打包成带 `_meta` 的 JSON。小窗可拖动 / 最小化 / 关闭，菜单命令可唤出。脚本只在浏览器里抓包与导出，**不写磁盘、不连本地服务、不碰 git**——需要版本管理的是脚本文件本身，抓取动作与 git 无关。`CAPTURE.urlPatterns` 目前是**可配置占位**，待用户提供真实接口地址 + JSON 样例后替换。新增 `docs/capture.md` 说明安装 / 导出 / 接口改法。模拟环境加载脚本验证 hook / 小窗 / 复制 / 下载无运行时异常。
+- **油猴内嵌精测台（抓包 + 一键导入）**：新增 `tools/capture/`，把**完整精测程序嵌进三国杀官网页面运行**。油猴 hook 页面 fetch/XHR 抓活动 JSON，转成公告文本，经 `postMessage` 发给内嵌精测程序，自动 `PARSER.parse + apply` 当场出结果；也可直接粘贴公告 md 导入。精测程序在 iframe（sandbox allow-scripts + allow-same-origin）里跑，与官网 DOM/CSS 隔离；消息带 `__sgsCapture:1` 标记校验。构建链：`build-embedded.js` 把 index.html + style.css + 9 个 js 打包成单文件 `embedded.html`（349KB），再内联进模板 `sgs-jingce.template.js` 生成最终安装版 `sgs-jingce.user.js`（378KB）——因为油猴在 https 页无法 fetch 本地 file://，内联 srcdoc 是让它自包含运行的唯一方式。`ui.js` 新增 `window.__SGS_IMPORT__(文本|model)` 导入接口与 message 监听，doApply 重构成共用的 `applyModel()`，file:// 直开行为不变。`CAPTURE.urlPatterns` 与 `TRANSFORM`（JSON→公告文本钩子）目前是**可配置占位**，待用户提供真实接口 + JSON 样例后精调。新增/重写 `docs/capture.md`。验证：`embedded.html` 独立打开导入真实小雪样本、油猴脚本注入模拟后台页走通「抓包→导入→iframe 数据更新」全链路，均零 JS 错误；项目回归 304 全绿。脚本只在浏览器运行，**不写磁盘、不连服务、不碰 git**，随仓库做版本管理的是脚本文件本身。
 
 ---
 
