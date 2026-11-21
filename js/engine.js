@@ -132,15 +132,25 @@ const E = {};
   /* 活动白送的中间道具（登录勋章、任务），用于抵扣购买量 */
   function freeOf(cur, names) {
     let q = 0;
+    const list = names || [];
     (P.freeGains || []).forEach((f) => {
       if (f.cur !== cur) return;
       if (f.only) {
-        const list = names || [];
         if (list.some((n) => f.only.includes(n))) q += f.qty;
         return;
       }
       q += f.qty;
     });
+    /* 专属纳贤令（「专令:陆文漪」）只对同名武将生效，字段判断必须严格：
+       名字对不上就一分不算。它和通用纳贤令一样 1 令 = 1 点进度，
+       但绝不能给别的武将用——这正是用户强调的「注意字段的判断选择」。 */
+    if (cur === '纳贤令') {
+      (P.freeGains || []).forEach((f) => {
+        if (!/^专令:/.test(f.cur || '')) return;
+        const hero = f.cur.slice(3);
+        if (list.includes(hero)) q += f.qty;
+      });
+    }
     return q;
   }
   E.freeOf = freeOf;
@@ -381,6 +391,8 @@ const E = {};
     });
     P.directSales.forEach((d) => add(d.name, d.cat, { sale: d.price, free: d.free }));
     P.consumeRewards.forEach((c) => add(c.name, null, { consume: c.need }));
+    /* 草船借箭概率武将：靠消费产草人→箭矢兑换，属消费副产品型目标 */
+    (P.ccbjTargets || []).forEach((c) => add(c.name, '武将', { ccbj: c.arrows }));
 
     /* 皮肤不再混成一类：按获取途径拆成 转盘 / 锦绣 / 直售
        转盘 = 狂欢夺宝的三个转盘（db_*）；锦绣 = 锦绣霓裳商店（绸缎） */
@@ -631,6 +643,29 @@ const E = {};
         });
       }
     });
+
+    /* ---- 9.11 草船借箭：概率武将的期望定价 ----
+       孙和/徐馨等不在普通商店，靠「草人抽箭矢 → 箭矢兑换武将」。
+       期望抽数 = 兑换箭矢 / 箭矢期望；每草人的元宝成本按充值档最优性价比估
+       （草人来自每日任务的充值/消费档，充值档性价比最高）；这个成本只是给格子
+       显示和路线比选用，实际精测里这类武将靠方案消费附赠的草人覆盖，不单独买。 */
+    const ccT = (P.ccbjTargets || []).find((x) => x.name === name);
+    if (ccT && P.ccbj && P.ccbj.arrow) {
+      const ev = P.ccbj.arrow.ev || 150;
+      const draws = Math.ceil(ccT.arrows / ev - 1e-9);
+      push({
+        key: 'ccbj:' + name, kind: 'ccbj', sysId: 'ccbj', sysName: '草船借箭',
+        target: name, basis: 'avg',
+        label: `兑换 ${E.fmt(ccT.arrows)} 箭矢 · 期望 ${draws} 抽 · 边际0（靠消费产草人）`,
+        chain: [
+          { cur: '草人', qty: draws, note: `每抽箭矢期望 ${ev}` },
+          { cur: '箭矢', qty: ccT.arrows, note: '兑换商店必得' },
+        ],
+        curName: '草人', curQty: draws, freeQty: 0, buyQty: draws,
+        costEv: { yb: 0, uni: 0 }, costMax: null, picks: [],
+        note: '概率武将：靠消费产草人→抽箭矢兑换，期望口径；实际由方案消费覆盖',
+      });
+    }
 
     routes.sort((a, b) => {
       const ha = a.hidden ? 1 : 0, hb = b.hidden ? 1 : 0;

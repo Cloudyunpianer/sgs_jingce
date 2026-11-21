@@ -66,6 +66,10 @@ window.RATES = (function () {
       const c = P.coupons[k] || {};
       out[k] = (c.face || 0) * usableOf(c.face || 0);
     });
+    /* 自选福袋折出的定向产出：招募令有商城价 1000/个（武将招募令*10=10000）；
+       定向武将无统一标价，按纳贤令标准价估，且只在 sel15 列计入（可选，不算进「不拿纳贤」）。 */
+    out['定向招募令'] = 1000;
+    out['定向武将'] = out['纳贤令'] || 1000;
     _unit = out;
     return out;
   }
@@ -170,10 +174,18 @@ window.RATES = (function () {
   function tierList(days) {
     days = days || P.meta.days || 9;
     return (P.chargeTiers || []).map((t, i) => {
+      /* onceGives = 整期限1次的奖励（如「单笔3000·小雪大红包，限完成1次」）。
+         它不随档位购买次数累乘，所以单独折一份价值。
+         以前漏掉它会导致单档倍率偏低；更早以前把它并进 gives，
+         才会出现 ¥30×7 把 6150 红包算成 43050 的重复参与。 */
       const A = valOf(t.gives);
+      const O = valOf(t.onceGives || {});
+      const onceVal = O.val;
       const altBind = t.alt ? (t.alt['绑定元宝'] || 0) : 0;
       const B = t.alt ? valOf(t.alt, ['绑定元宝']) : null;
 
+      /* rebVal 只放「可随购买次数累加」的返利，供 DP 里 rebVal×k 用；
+         限1次价值单独走 onceVal（每档只计1份），不进 rebVal，避免多买时重复累加。 */
       const routeA = { yb: t.need, reb: A.rows, rebVal: A.val, total: t.need + A.val };
       const routeB = B ? { yb: t.need + altBind, reb: B.rows, rebVal: B.val, total: t.need + altBind + B.val } : null;
       const bestRoute = routeB && routeB.total > routeA.total + 1e-9 ? 'B' : 'A';
@@ -185,17 +197,33 @@ window.RATES = (function () {
         : t.perDay ? '每日'
         : t.total != null ? `共${t.total}次` : '1次';
 
+      /* 推荐上限 prefCap：阶梯方案里每档买几次，和真实 cap（全买满用）分开。
+         纯绑元档（gives 只有绑定元宝，倍率恒定 2.0×，没有券/令/抽将道具）
+         买多次不产生任何额外奖励、纯粹凑金额，所以限 1 次；
+         带券/纳贤令/红包等额外奖励的每日档可买多次（上限 3），
+         让方案靠「多加几个不同档位」堆金额，而不是把单一低倍率档买到天花板。 */
+      const giveKeys = Object.keys(t.gives || {}).filter((k) => (t.gives[k] || 0) > 0);
+      const hasExtra = giveKeys.some((k) => k !== '绑定元宝' && !/红包/.test(k));
+      const onceKeys = Object.keys(t.onceGives || {}).filter((k) => (t.onceGives[k] || 0) > 0);
+      const hasOnceExtra = onceKeys.some((k) => k !== '绑定元宝' && !/红包/.test(k));
+      const realCap = t.total != null ? t.total : (t.perDay ? t.perDay * days : 1);
+      const prefCap = (hasExtra || hasOnceExtra) ? Math.min(realCap, 3) : Math.min(realCap, 1);
+
       return {
         i, need: t.need, rmb: t.need / 100, yb: pickR.yb, reb: pickR.reb, rebVal: pickR.rebVal,
-        total: pickR.total,
-        ratio: t.need > 0 ? pickR.total / t.need : 0,
+        prefCap,
+        /* 单档展示的 total/ratio 要含限1次价值（充1次就能领），但 DP 累加用 rebVal，
+           两者刻意分开：onceVal 不进 rebVal，避免买 N 次被算成 N 份。 */
+        onceVal,
+        total: pickR.total + onceVal,
+        ratio: t.need > 0 ? (pickR.total + onceVal) / t.need : 0,
         tag,
         altBind, altYb: routeB ? routeB.yb : 0,
         /* capYb = 这个档位最多能拿到多少「可花元宝」——双倍箱选绑元时是 2 倍本金。
            凑额 DP 要用它，否则「要花 40 万元宝」会被判成买不到。 */
         capYb: Math.max(routeA.yb, routeB ? routeB.yb : 0),
         routeA, routeB, bestRoute, altBetter,
-        cap: t.total != null ? t.total : (t.perDay ? t.perDay * days : 1),
+        cap: realCap,
         cond: condText(t, days),
         altText: altBind
           ? `二选一：道具包合计 ${E.fmt(Math.round(routeA.total))} 元宝价值（${(routeA.total / t.need).toFixed(2)}×），或换绑元×${E.fmt(altBind)} 到账 ${E.fmt(routeB.yb)}（${(routeB.total / t.need).toFixed(2)}×）`
@@ -335,6 +363,7 @@ window.RATES = (function () {
     if (/红包/.test(k)) return 'hongbao';
     if (/券/.test(k)) return 'coupon';
     if (/15\s*[-选一]|十五选一|自选武将|武将自选|自选礼|选一/.test(k)) return 'sel15';
+    if (/^定向招募令$|^定向武将$/.test(k)) return 'sel15';
     if (/纳贤|^令$/.test(k)) return 'naxian';
     if (/灯|玉|球/.test(k)) return 'lamp';
     return 'other';
@@ -364,6 +393,8 @@ window.RATES = (function () {
       } else {
         Object.keys(src.gives || {}).forEach((k) => put(k, (src.gives[k] || 0) * n));
       }
+      /* 整期限1次的奖励：买几份都只算 1 次，绝不 ×n */
+      if (n > 0) Object.keys(src.onceGives || {}).forEach((k) => put(k, src.onceGives[k] || 0));
     });
     const base = c.cost;
     const sum = COLS.reduce((a, col) => a + b[col.key], 0);
@@ -393,7 +424,7 @@ window.RATES = (function () {
   function combo(list, days) {
     const tiers = tierList(days);
     const picks = [];
-    let cost = 0, yb = 0, rebVal = 0, count = 0, capped = false;
+    let cost = 0, yb = 0, rebVal = 0, onceTotal = 0, count = 0, capped = false;
     const gives = {};
     (list || []).forEach((it) => {
       const t = tiers.find((x) => (it.i != null ? x.i === it.i : x.need === it.need));
@@ -407,16 +438,22 @@ window.RATES = (function () {
       cost += t.need * n;
       yb += t.yb * n;
       rebVal += t.rebVal * n;
+      /* 限1次价值：只在「该档第一次进入组合」时计1份，之后重复加购不再加。
+         already>0 说明这个档已经在 picks 里了（同一档被拆成多笔）。 */
+      if (!already) onceTotal += t.onceVal || 0;
       count += n;
       /* 只有走道具路线时才有道具返利；走绑元路线时返利为空 */
       if (t.bestRoute === 'A') {
         const raw = (P.chargeTiers[t.i] && P.chargeTiers[t.i].gives) || {};
         Object.keys(raw).forEach((k) => { gives[k] = (gives[k] || 0) + raw[k] * n; });
+        /* 限1次奖励只计 1 份（与 breakdown 同口径） */
+        const once = (P.chargeTiers[t.i] && P.chargeTiers[t.i].onceGives) || {};
+        Object.keys(once).forEach((k) => { gives[k] = (gives[k] || 0) + once[k]; });
       }
     });
-    const total = yb + rebVal;
+    const total = yb + rebVal + onceTotal;
     const r = {
-      picks, cost, money: cost / 100, yb, rebVal, total, count, capped, gives,
+      picks, cost, money: cost / 100, yb, rebVal, onceVal: onceTotal, total, count, capped, gives,
       ratio: cost > 0 ? total / cost : 0,
       rebRate: cost > 0 ? rebVal / cost : 0,
       sig: picks.map((p) => p.tier.need + 'x' + p.n).sort().join('+'),
@@ -462,7 +499,7 @@ window.RATES = (function () {
     const maxKinds = opts.maxKinds || tiers.length;
     /* 剪枝：从 idx 往后全买满也够不到「预算的 30%」，这条分支就没意义 */
     const suffix = new Array(tiers.length + 1).fill(0);
-    for (let i = tiers.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + tiers[i].need * tiers[i].cap;
+    for (let i = tiers.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + tiers[i].need * (opts.useRealCap ? tiers[i].cap : tiers[i].prefCap);
     const floorYb = limit * (opts.minShare == null ? 0.25 : opts.minShare * 0.3);
 
     const all = [];
@@ -474,7 +511,10 @@ window.RATES = (function () {
       }
       if (spent + suffix[idx] < floorYb - 1e-6) return;
       const t = tiers[idx];
-      const maxK = Math.min(t.cap, Math.floor((limit - spent) / t.need));
+      /* 用推荐上限 prefCap，不再把单一低倍率档买到真实天花板（¥30×8/¥128×6）。
+         想要「全买满」时由 fullMix 负责，那条链路仍用真实 cap，互不干扰。 */
+      const buyCap = opts.useRealCap ? t.cap : t.prefCap;
+      const maxK = Math.min(buyCap, Math.floor((limit - spent) / t.need));
       for (let k = 0; k <= maxK; k++) {
         const added = k > 0 && !cur.some((x) => x.i === t.i);
         if (k > 0 && kinds + 1 > maxKinds) break;

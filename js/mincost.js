@@ -52,7 +52,9 @@ window.MINCOST = (function () {
       const def = P.coupons[k] || { face: 0 };
       const init = (stock.coupons && stock.coupons[k]) || 0;
       const fromCharge = Math.max(0, ...(P.chargeTiers || []).map((t) => (t.gives && t.gives[k]) || 0))
-        * Math.max(1, ...(P.chargeTiers || []).map((t) => (t.total != null ? t.total : (t.perDay ? t.perDay * days : 1))));
+        * Math.max(1, ...(P.chargeTiers || []).map((t) => (t.total != null ? t.total : (t.perDay ? t.perDay * days : 1))))
+        /* 限1次的券不在 gives 里（被分离到 onceGives），按每档最多 1 份补进池子上限 */
+        + Math.max(0, ...(P.chargeTiers || []).map((t) => (t.onceGives && t.onceGives[k]) || 0));
       const fromDaily = Math.max(0, ...(P.dailyTiers || []).map((t) => (t.gives && t.gives[k]) || 0)) * days;
       pool += (init + fromCharge + fromDaily) * def.face;
     });

@@ -367,14 +367,20 @@
     return Object.keys(t || {}).map((k) => `${cpnLabel(k)}×${E.fmt(t[k])}`).join(' · ');
   }
 
-  /* 到账口径：和充值倍率表「总元宝」一致 = 可花本金 + 单笔档返的绑定元宝（红包等折的）。
-     返利那部分在方案里已回冲需求（少买令），不能再算进可花余额，所以单独标注，
-     免得和「实付 / 本金余」对不上。老版本只显示本金，倍率表却显示总额，两个数字打架。 */
+  /* 到账 = 可花总额 = 充值本金 + 红包返利 + 福喵返利（+ 首充双倍）。
+     以前返利只在这里展示、不进预算，锁定 132 时明明返还够花却报「还差一万多」。
+     绑定元宝不在回冲品类里，计入可花余额不会双算，这里把构成标清楚。 */
   function arrivalText(chg) {
     const yb = (chg && chg.yb) || 0;
-    const arr = Math.max((chg && chg.arrivalYb) || yb, yb);
-    const reb = Math.max(0, arr - yb);
-    return `到账 ${E.fmt(arr)} 元宝` + (reb > 0 ? `（本金 ${E.fmt(yb)} + 返利 ${E.fmt(reb)}）` : '');
+    const red = (chg && chg.rebateYb) || 0;
+    const fm = (chg && chg.fumiaoYb) || 0;
+    const fd = (chg && chg.firstDoubleYb) || 0;
+    const arr = Math.max((chg && chg.arrivalYb) || (yb + red + fm + fd), yb + red + fm + fd);
+    const parts = [`本金 ${E.fmt(yb)}`];
+    if (red > 0) parts.push(`红包 ${E.fmt(red)}`);
+    if (fm > 0) parts.push(`福喵 ${E.fmt(fm)}`);
+    if (fd > 0) parts.push(`首充双倍 ${E.fmt(fd)}`);
+    return `到账 ${E.fmt(arr)} 元宝` + (arr > yb + 1 ? `（${parts.join(' + ')}）` : '');
   }
 
   function renderPlan() {
@@ -399,7 +405,7 @@
     });
     state.daily = r;
 
-    const left = r.charge.yb - r.netSpend;
+    const left = (r.charge.spendableYb != null ? r.charge.spendableYb : r.charge.yb) - r.netSpend;
     const noRoute = r.noRoute || [];
     const unb = r.unbuyable || [];
     /* 报价不完整：要么目标本身没渠道，要么需求的道具本期买不到 */
@@ -598,7 +604,104 @@
         <tbody>${condRows}</tbody>
       </table>
       <h4>免费到手（登录 / 任务白送，不进上面的账）</h4>
-      <div class="free-chips">${freeChips}</div>`;
+      <div class="free-chips">${freeChips}</div>
+      ${rhythmHtml(r, state.ctx.days)}
+      ${jadeTopupHtml(r)}
+      ${ccbjHtml(r, names)}`;
+  }
+
+  /* 草船借箭：概率武将靠方案消费产草人→抽箭矢→兑换。
+     展示草人来源分解、每个选中武将的期望覆盖情况，以及不足时补到哪个档。 */
+  function ccbjHtml(r, names) {
+    const cp = SCHED.ccbjPlan(names, r, state.ctx.days);
+    if (!cp.on || !cp.targets.length) return '';
+    const g = cp.grass;
+    const rows = cp.targets.map((t) => {
+      const cls = t.covered ? (t.coveredMin ? 'done' : 'hl-row') : 'far';
+      let note;
+      if (t.covered) note = t.coveredMin ? '<span class="st in">保底也够</span>'
+        : '<span class="st warn">期望够·非保底</span>';
+      else if (t.topup && t.topup.steps.length) {
+        const steps = t.topup.steps.map((s) => `${s.type} ${E.fmt(s.need)}→+${s.qty}草人`).join('、');
+        note = `<span class="st warn">差 ${t.needGrass} 草人</span><div style="font-size:9.3px;color:var(--ink-3);white-space:normal;margin-top:2px">补：${steps}</div>`;
+      } else note = `<span class="st off">差 ${t.needGrass} 草人</span>`;
+      return `<tr class="${cls}">
+        <td>${t.name}</td>
+        <td class="num">${E.fmt(t.arrows)}</td>
+        <td class="num">${t.drawsEv}</td>
+        <td class="num">${E.fmt(t.arrowEv)}</td>
+        <td>${note}</td>
+      </tr>`;
+    }).join('');
+    const tip = `本方案产 <b class="hl-num">${g.total}</b> 草人（游戏 ${g.game} + 充值 ${g.charge} + 消费 ${g.spend}），`
+      + `每抽箭矢期望 <b>${cp.arrow.ev}</b>、保底 ${cp.arrow.min}，期望共 <b>${E.fmt(g.total * cp.arrow.ev)}</b> 箭矢。`
+      + (cp.allCovered ? ' 选中武将均可用期望箭矢兑换到。' : ' 未达标的武将按「补档」把消费/充值顶到对应档即可多抽。');
+    return `<h4>草船借箭 · 概率武将期望覆盖</h4>
+      <div class="out-note jade-tip">${tip}</div>
+      <table class="out-table rhythm ccbj-topup">
+        <thead><tr><th>武将</th><th class="num">需箭矢</th><th class="num">期望抽数</th><th class="num">本方案期望箭矢</th><th>覆盖 / 补档</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  /* 累计消费送宝玉：告诉玩家「消费也能换玉」，并把净消费补到下一档门槛。
+     宝玉是珍宝商店换武将的硬通货，所以这类活动的消费不该只停在买齐道具的最小花费。 */
+  function jadeTopupHtml(r) {
+    const jt = SCHED.spendJadeTopup(r.netSpend);
+    if (!jt.on) return '';
+    const rows = jt.tiers.map((t) => {
+      const isNext = jt.next && t.need === jt.next.need;
+      return `<tr class="${t.reached ? 'done' : isNext ? 'hl-row next' : 'far'}">
+        <td class="num">${E.fmt(t.need)}</td>
+        <td>${t.jadeText}</td>
+        <td class="num">${E.fmt(Math.round(t.value))}</td>
+        <td>${t.reached ? '<span class="st in">已拿到</span>'
+          : isNext ? `<span class="st warn">再花 ${E.fmt(Math.round(t.gap))}</span>`
+            : `<span class="dim">差 ${E.fmt(Math.round(t.gap))}</span>`}</td>
+      </tr>`;
+    }).join('');
+    const tip = jt.topup
+      ? `当前净消费 <b>${money(r.netSpend)}</b>，再补 <b class="hl-num">${E.fmt(Math.round(jt.topup.gap))} 元宝</b>`
+        + ` 到 <b>${E.fmt(jt.topup.toNeed)}</b> 档，可多拿 <b class="hl-num">${jt.topup.jade} 个传世宝玉</b>`
+        + `（按保底约值 ${E.fmt(Math.round(jt.topup.value))} 元宝）。宝玉能在珍宝商店换武将，凑到门槛通常比停在档外划算。`
+      : `本期累计消费送宝玉 <b>${jt.tiers.length}</b> 档已全部拿到，宝玉档这块没有可补的了。`;
+    return `<h4>累计消费送宝玉 · 补档建议</h4>
+      <div class="out-note jade-tip">${tip}</div>
+      <table class="out-table rhythm jade-topup">
+        <thead><tr><th class="num">累计消费门槛</th><th>送宝玉</th><th class="num">约值元宝</th><th>状态</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  /* 消费节奏对比：同样一笔钱，一次性花完还是分天花，哪个每日档拿得多。
+     plan 只给原始奖励，这里用 rates 的单价折成元宝价值再排序。 */
+  function rhythmHtml(r, days) {
+    const rhythms = SCHED.spendRhythm(r.netSpend, days);
+    if (!rhythms.length) return '';
+    const U = RATES.unitTable();
+    const scored = rhythms.map((x) => {
+      const val = Object.keys(x.gets).reduce((a, k) => a + x.gets[k] * (U[k] || 0), 0);
+      return { ...x, val, detail: Object.keys(x.gets)
+        .map((k) => `${k}×${E.fmt(x.gets[k])}`).join('、') };
+    });
+    const bestVal = Math.max(...scored.map((x) => x.val));
+    const rows = scored.map((x) => {
+      const best = x.val >= bestVal - 1e-6;
+      const dayStr = x.perDay.filter((v) => v > 0).map((v) => E.fmt(Math.round(v))).join(' / ');
+      return `<tr class="${best ? 'hl-row' : ''}">
+        <td>${x.name}${best ? ' <span class="st in">最划算</span>' : ''}<div style="font-size:9.4px;color:var(--ink-3);white-space:normal">${x.note}</div></td>
+        <td class="num">${x.daysUsed}</td>
+        <td class="num">${x.hitCount}</td>
+        <td class="num">${E.fmt(Math.round(x.val))}</td>
+        <td style="white-space:normal;font-size:9.6px" title="${dayStr}">${dayStr}</td>
+      </tr>`;
+    }).join('');
+    return `<h4>消费节奏：一次性花完 vs 分天花</h4>
+      <div class="out-note">同样花 <b>${money(r.netSpend)}</b> 元宝，每日档是「当天花到门槛就领、每天都重置」。分散到多天能各领一次，但摊得太薄又够不到高档——下面按本期单价折成元宝价值。</div>
+      <table class="out-table rhythm">
+        <thead><tr><th>节奏</th><th class="num">用几天</th><th class="num">命中档</th><th class="num">奖励价值</th><th>每日花费</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   }
 
   /* ---------- 每日方案表（大表） ---------- */
@@ -608,13 +711,19 @@
     const rows = SCHED.rows(r);
     const body = rows.map((row) => {
       const chg = row.charges.length ? row.charges.map((c) => `¥${E.fmt(c.money)}`).join(' + ') : '—';
-      const flag = row.spend > 0 && !row.packs.length ? '' : '';
+      /* 消费档位标注：当日净消费过了哪些每日档（对齐人工图的「消费档位」列） */
+      const tierTxt = (row.tierNeeds || []).length
+        ? `<div class="day-tier">档 ${row.tierNeeds.map((n) => E.fmt(n)).join('/')}</div>` : '';
+      /* 用券买的道具单独标出来（对齐人工图「用X券买Y个」） */
+      const cpnTxt = (row.couponPacks || []).length
+        ? `<div class="day-cpn">券购 ${groupPacks(row.couponPacks).join('、')}${row.couponDisc ? `（省${E.fmt(row.couponDisc)}）` : ''}</div>` : '';
+      const buyTxt = groupPacks(row.packs).join('　·　');
       return `<tr>
         <td>${dateOf(row.i)}</td>
         <td class="chg">${chg}</td>
         <td class="num">${row.charges.length ? E.fmt(row.charges.reduce((a, c) => a + c.money, 0)) : '—'}</td>
-        <td class="num">${E.fmt(row.spend)}</td>
-        <td>${groupPacks(row.packs).join('　·　') || '—'}</td>
+        <td class="num">${E.fmt(row.spend)}${tierTxt}</td>
+        <td>${buyTxt || '—'}${cpnTxt}</td>
         <td>${rewardText(row.tier) || '—'}</td>
       </tr>`;
     }).join('');
@@ -646,7 +755,7 @@
           <tbody>${aud}</tbody>
         </table>
       </div>
-      <p class="sumline">充值 <b>¥${E.fmt(r.money)}</b>（${chgList}）· ${arrivalText(r.charge)} · 实付 <b>${E.fmt(r.netSpend)}</b> · 抵价券省 <b>${E.fmt(r.couponSave)}</b>${r.charge.yb - r.netSpend > 1 ? ` · 可花余 <b>${E.fmt(r.charge.yb - r.netSpend)}</b>` : ''}</p>
+      <p class="sumline">充值 <b>¥${E.fmt(r.money)}</b>（${chgList}）· ${arrivalText(r.charge)} · 实付 <b>${E.fmt(r.netSpend)}</b> · 抵价券省 <b>${E.fmt(r.couponSave)}</b>${(r.charge.spendableYb != null ? r.charge.spendableYb : r.charge.yb) - r.netSpend > 1 ? ` · 可花余 <b>${E.fmt((r.charge.spendableYb != null ? r.charge.spendableYb : r.charge.yb) - r.netSpend)}</b>` : ''}</p>
       ${r.budget > 0 ? `<p class="hint">逐日预算：按每天 <b>${E.fmt(r.budget)}</b> 元宝卡当日消费档，共 ${r.act} 天有花销。每日档（含每日重置的充值档）按天各结算一次，堆在一天只能吃一次。</p>` : ''}
       ${r.duobao && r.duobao.detail && r.duobao.detail.length ? `<p class="hint">夺宝兑换：本期返到 <b>${E.fmt(r.duobao.pool)}</b> 张夺宝券，打 ${r.duobao.detail.map((x) => `${x.pool} ${x.plays} 次（${x.coupons} 券）`).join(' + ')}，换回 ${Object.keys(r.duobao.got).map((k) => `${k}×${E.fmt(r.duobao.got[k])}`).join('、')}。券不打夺宝就作废。</p>` : ''}
       ${r.extras.length ? `<p class="hint">顺带拿到：${r.extras.map((x) => `${x.label}×${E.fmt(x.qty)}`).join(' · ')}</p>` : ''}`;

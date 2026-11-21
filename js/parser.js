@@ -65,6 +65,33 @@ window.PARSER = (function () {
      由 scanRedPackets() 在 parse 开始时填好，toGives 直接查。 */
   let RED_EV = {};
 
+  /* 自选福袋名单 → { 福袋名: {品类, 数量} }
+     公告里福袋名单长这样：
+       「小雪武将自选福袋：陶璜、崔烈、…、武将招募令*10，任选其一。」
+     充值得这种福袋时，玩家从名单里挑一项。按用户口径取「最高价值项」折算：
+     名单里带数字的道具（武将招募令*10）有商城价、价值明确，优先取；
+     纯武将名（无定价）退而取定向武将，归到 sel15 定向列。 */
+  let BAG_VAL = {};
+  function scanBags(ls) {
+    const out = {};
+    ls.forEach((raw) => {
+      const ln = raw.trim();
+      const m = /([^\s：:，,。*]*福袋)\s*[：:]\s*([^。]*?)[，,]?\s*任选其一/.exec(ln);
+      if (!m) return;
+      const name = clean(m[1]);
+      const items = nqList(m[2]);
+      /* 取带明确数量的道具项：优先「招募令*N」（单价 1000），其次任意「XX*N」 */
+      const numeric = items
+        .map((x) => ({ name: x.name, n: x.n, raw: x }))
+        .filter((x) => x.n > 1);
+      const best = numeric.sort((a, b) => b.n * (b.name === '武将招募令' ? 1000 : 1)
+        - a.n * (a.name === '武将招募令' ? 1000 : 1))[0];
+      if (best) out[name] = { kind: best.name, n: best.n };
+      else out[name] = { kind: '定向武将', n: 1, who: items.map((x) => x.name) };
+    });
+    return out;
+  }
+
   /* 红包概率表 → { 初冬红包: { ev, min, max, rows } }
      表长这样（标题「**初冬红包**」下面）：
        | 绑定元宝*3000 | 50% |                                        */
@@ -90,6 +117,18 @@ window.PARSER = (function () {
       e.max = Math.max(...e.rows.map((r) => r.yb));
     });
     return out;
+  }
+
+  /* 专属纳贤令 → 带归属的品类 key「专令:武将」。
+     「陆文漪纳贤令」「店兑换陆文漪纳贤令」只能用于该武将的专属纳贤进度，
+     和通用纳贤令不是一回事。旧版 toGives 把 /纳贤令$/ 一律折成通用令，
+     导致专属令被当成全武将通用的令（字段判断错误）。这里先归一出武将名：
+     剥掉「店兑换 / 特惠精选 / 定向」等渠道前缀，只留真正的武将名。
+     「特惠精选纳贤令」是 k 选 1 定向令，走单独的 sel15 口径，不在这里。 */
+  function exclusiveHero(raw) {
+    const who = CUR.exclusiveLing(raw);
+    if (!who || /特惠精选|定向|专属/.test(who)) return null;
+    return who.replace(/^(店兑换|商城兑换|兑换)/, '').trim() || null;
   }
 
   /* 奖励文案 → gives（只留可计算品类；券按面额拆 key；礼盒统一记「盒」）
@@ -118,9 +157,30 @@ window.PARSER = (function () {
         const rp = RED_EV[it.name];
         if (rp && rp.ev > 0) { g['绑定元宝'] = (g['绑定元宝'] || 0) + rp.ev * it.n; return; }
       }
+      /* 自选福袋：玩家从名单里挑一项。按最高价值项折算（用户口径）。
+         名单里有「武将招募令*10」这类有商城价的道具 → 折成「定向招募令」；
+         只有武将名 → 折成「定向武将」。二者都归倍率表 sel15 定向列。
+         只对 opt.bags 开启的调用生效——目前仅「单笔充值」档用，
+         消费/累计档的福袋是「只对指定将有用」的定向奖励，有独立的 only 口径，
+         折成通用令会污染精测回冲（曾让初冬报价从 1072 虚涨到 1140）。 */
+      const bag = opt && opt.bags ? (BAG_VAL[it.name] || BAG_VAL[clean(it.name)]) : null;
+      if (bag) {
+        const key = bag.kind === '纳贤令' ? '定向武将'
+          : (bag.kind === '武将招募令' ? '定向招募令'
+            : (bag.kind === '定向武将' ? '定向武将' : bag.kind));
+        g[key] = (g[key] || 0) + bag.n * it.n;
+        return;
+      }
       const c = CUR.canon(it.name);
       if (CUR.isCurrency(it.name)) { g[c] = (g[c] || 0) + it.n; return; }
-      if (/纳贤令$/.test(it.name)) { g['纳贤令'] = (g['纳贤令'] || 0) + it.n; return; }
+      /* 专属令优先于通用令判断：先认出「XX纳贤令」的武将归属，
+         再决定是专令还是通用令——字段顺序错了就会把专属令折成通用令。 */
+      if (/纳贤令$/.test(it.name)) {
+        const hero = exclusiveHero(it.name);
+        const key = hero ? '专令:' + hero : '纳贤令';
+        g[key] = (g[key] || 0) + it.n;
+        return;
+      }
       if (opt && opt.keep) g[it.name] = (g[it.name] || 0) + it.n;
     });
     return g;
@@ -144,13 +204,29 @@ window.PARSER = (function () {
       meta: {}, systems: [], shops: {},
       coupons: {}, chargeTiers: [], cumCharge: [], dailyTiers: [], cumSpend: [],
       dailyCumCharge: [],
+      /* 消费送宝玉：累计消费到门槛送传世宝玉（3万/6万/10万/20万 → 3/3/4/10 玉）。
+         这类档位写在「传世宝玉」章节，标题不含「消费」，会被 secText(/消费/) 整段漏掉。
+         单独建模成 P.jadeSpend，供消费规划提示「补到对应档位」；
+         不混进 cumSpend——那些宝箱档 gives 为空，混进来会改变精测回冲与价格基线。 */
+      jadeSpend: [],
+      /* 草船借箭：概率抽取活动。草人=抽数（来自每日任务），每抽掉箭矢期望值，
+         箭矢可去兑换商店必得武将（孙和 12000 / 徐馨 10000）。
+         概率武将如孙和/徐馨记为「期望定价」目标：元宝成本 = 需抽数 × 每抽元宝，
+         需抽数 = 兑换箭矢 / 箭矢期望。单列字段，不混进普通商店避免基线漂移。 */
+      ccbj: null,
       bundles: [], freeGains: [], boughtGains: [], directSales: [],
       unsupported: [], curLabel: {}, naxianDaily: [], redPackets: {},
+      /* 福喵纳财：每日消费返绑定元宝。原版只识别活动名、丢进 unsupported，
+         手搓攻略「每天消费1w、次日返1200」整条收益链就没进精算。 */
+      fumiao: null,
     };
 
     /* 红包概率表要先扫出来：后面 toGives 遇到「xx红包」要按期望折成绑元 */
     RED_EV = scanRedPackets(ls);
     model.redPackets = RED_EV;
+    /* 自选福袋名单：后面 toGives 遇到「xx福袋」按名单最高价值项折算 */
+    BAG_VAL = scanBags(ls);
+    model.bagValues = BAG_VAL;
 
     const tbs = tables(ls);
     const secs = sections(ls);
@@ -225,6 +301,75 @@ window.PARSER = (function () {
       model.shops[def.key] = items;
       rep.push(`${def.key} 商店：${items.length} 项`);
     });
+
+    /* ---------- 2.5 草船借箭：草人（抽）→ 箭矢（期望）→ 兑换武将 ----------
+       识别三张表：每日任务（获得草人）、抽取掉落箭矢概率、箭矢兑换。
+       概率武将（孙和/徐馨）本公告只给出「掉落概率 + 重复返还箭矢」，
+       真正的保底路径是兑换商店（孙和 12000 / 徐馨 10000 箭矢）。
+       箭矢期望 = Σ(箭矢数 × 概率)，人工精测口径取期望；这里同时记 min 保底。 */
+    const ccLines = secLines(/草船借箭/);
+    if (ccLines.length) {
+      const ccTbs = tables(ccLines);
+      const cc = { grass: { game: 1, charge: [], spend: [] }, arrow: { prob: [], ev: 0, min: 0 }, exchange: [], dropBack: [] };
+
+      /* 每日任务表：列名含「获得草人」；行形如「累计充值5000元宝 | … | 10」 */
+      const grassTb = ccTbs.find((t) => t.head.some((h) => /草人/.test(h)));
+      if (grassTb) {
+        grassTb.rows.forEach((r) => {
+          const label = r[0] || '';
+          const q = num(r[r.length - 2]) || num(r[r.length - 1]) || 0;
+          if (!q) return;
+          if (/游戏/.test(label)) cc.grass.game = q;
+          else if (/充值/.test(label)) cc.grass.charge.push({ need: num(label), qty: q });
+          else if (/消费/.test(label)) cc.grass.spend.push({ need: num(label), qty: q });
+        });
+        cc.grass.charge.sort((a, b) => a.need - b.need);
+        cc.grass.spend.sort((a, b) => a.need - b.need);
+      }
+
+      /* 箭矢概率表：head = 数量 / 概率（pct() 解析 20.00%） */
+      const probTb = ccTbs.find((t) => /数量/.test(t.head[0] || '') && /概率/.test(t.head[1] || ''));
+      if (probTb) {
+        probTb.rows.forEach((r) => {
+          const q = num(r[0]), p = pct(r[1]);
+          if (q && p != null) cc.arrow.prob.push({ qty: q, p });
+        });
+        if (cc.arrow.prob.length) {
+          cc.arrow.ev = Math.round(cc.arrow.prob.reduce((a, x) => a + x.qty * x.p / 100, 0));
+          cc.arrow.min = Math.min.apply(null, cc.arrow.prob.map((x) => x.qty));
+        }
+      }
+
+      /* 概率额外掉落：武将名 / 概率 / 重复返还箭矢 → 孙和+400、徐馨+300 等。
+         这张表的武将名单同时充当「箭矢兑换表里哪些是武将」的白名单——
+         兑换表里还有宝箱/转生丹/招募令等道具，不能用「非宝箱」粗暴排除。 */
+      const dropTb = ccTbs.find((t) => /道具/.test(t.head[0] || '') && /概率/.test(t.head[1] || '') && /注明/.test(t.head[2] || ''));
+      if (dropTb) {
+        dropTb.rows.forEach((r) => {
+          const nm = bareName(r[0]), p = pct(r[1]);
+          const back = /箭矢[*×](\d+)/.exec(r[2] || '');
+          if (nm && p != null && back) cc.dropBack.push({ name: nm, p, arrows: +back[1] });
+        });
+      }
+      const heroSet = new Set(cc.dropBack.map((x) => x.name));
+
+      /* 箭矢兑换表：道具名 / 消耗箭矢 / 限制兑换次数。只留「概率掉落名单」里的武将。
+         这样董絮/孙和/徐馨等进目标，宝箱/转生丹/招募令等道具被干净排除。 */
+      const exTb = ccTbs.find((t) => /道具名/.test(t.head[0] || '') && /箭矢/.test(t.head[1] || ''));
+      if (exTb) {
+        exTb.rows.forEach((r) => {
+          const nm = bareName(r[0]), cost = num(r[1]), limit = num(r[2]) || 1;
+          if (!nm || !cost) return;
+          if (heroSet.size && !heroSet.has(nm)) return;   // 非概率掉落武将 = 道具，跳过
+          cc.exchange.push({ name: nm, arrows: cost, limit });
+        });
+      }
+
+      if (cc.exchange.length || cc.arrow.prob.length) {
+        model.ccbj = cc;
+        rep.push(`草船借箭：草人任务 充${cc.grass.charge.length}/消${cc.grass.spend.length} 档，箭矢期望 ${cc.arrow.ev}（保底 ${cc.arrow.min}），兑换武将 ${cc.exchange.length} 位`);
+      }
+    }
 
     /* ---------- 3. 祈福：累计积分 → 同心结 ---------- */
     const knotRe = /祈福积分达到(\d+)[，,]\s*可领取奖励：(.+?)[，,]\s*限完成1次/g;
@@ -446,16 +591,20 @@ window.PARSER = (function () {
           nqList(c).forEach((it) => {
             if (CUR.isCurrency(it.name)) { const k = CUR.canon(it.name); acc[k] = (acc[k] || 0) + it.n; }
             else if (/纳贤令$/.test(it.name)) {
-              const who = CUR.exclusiveLing(it.name);
-              const k = '专属:' + who;
+              const hero = exclusiveHero(it.name);
+              /* 用「专令:武将」统一 key；旧版写「专属:」再用 slice(4) 取名字，
+                 会把「陆文漪」截成「文漪」，名字对不上就永远不抵扣。 */
+              const k = hero ? '专令:' + hero : '纳贤令';
               acc[k] = (acc[k] || 0) + it.n;
             }
           });
         }
       });
       Object.entries(acc).forEach(([cur, qty]) => {
-        if (/^专属:/.test(cur)) model.freeGains.push({ cur: '纳贤令', qty, from: '七日任务·' + cur.slice(4), only: [cur.slice(4)] });
-        else model.freeGains.push({ cur, qty, from: '七日活跃任务' });
+        if (/^专令:/.test(cur)) {
+          const hero = cur.slice(3);
+          model.freeGains.push({ cur, qty, from: '七日任务·' + hero, only: [hero] });
+        } else model.freeGains.push({ cur, qty, from: '七日活跃任务' });
       });
     });
 
@@ -474,7 +623,7 @@ window.PARSER = (function () {
         .replace(/[，,]\s*每日限完成\d+次.*$/, '')
         .replace(/[，,]\s*(?:累计)?限完成\d+次.*$/, '')
         .replace(/[（(]\s*\d+\/\d+\s*重置[^）)]*[）)]\s*$/, '');
-      const gives = toGives(body);
+      const gives = toGives(body, { bags: true });
       const onlyDayM = /仅限\s*\d+\/(\d+)/.exec(before);
       const fromDayM = /(\d+)\/\d+\s*[~～]\s*\d+\/\d+\s*参与/.exec(before);
       const key = need + '|' + JSON.stringify(gives) + '|' + (onlyDayM ? onlyDayM[1] : '') + (fromDayM ? fromDayM[1] : '');
@@ -489,16 +638,37 @@ window.PARSER = (function () {
         note: body.slice(0, 40),
       });
     }
-    /* 「额外赠」段：同 need 且都无日期限定时，并入主档 */
+    /* 「额外赠」段：同 need 且都无日期限定时，并入主档。
+       关键：限次口径不同的奖励不能一起按主档次数累乘。
+       例：单笔 3000 同时有「纳贤令×3 / 每日限1次」和「小雪大红包 / 限完成1次」，
+       红包期望 6150 若并进 gives，就会跟着主档 cap=8 被算成 8 份（¥30×7 报 43050）。
+       整期限1次的那份移到 onceGives，无论主档买几次都只计 1 份。 */
     {
+      const merged = [];
       const byNeed = {};
-      model.chargeTiers = model.chargeTiers.filter((t) => {
+      model.chargeTiers.forEach((t) => {
         const p = byNeed[t.need];
-        if (!p) { byNeed[t.need] = t; return true; }
-        if ((t.onlyDay || t.fromDay) || (p.onlyDay || p.fromDay)) return true;
+        if (!p || (t.onlyDay || t.fromDay) || (p.onlyDay || p.fromDay)) {
+          if (!p) byNeed[t.need] = t;
+          merged.push(t);
+          return;
+        }
+        const pOnce = !p.perDay && p.total === 1;
+        const tOnce = !t.perDay && t.total === 1;
+        if (pOnce !== tOnce) {
+          const onceT = pOnce ? p : t;   /* 整期限1次的那份 */
+          const multT = pOnce ? t : p;   /* 可累乘的那份，留作主档 */
+          multT.onceGives = Object.assign(multT.onceGives || {}, onceT.gives);
+          byNeed[t.need] = multT;
+          if (pOnce) {
+            const at = merged.indexOf(p);
+            if (at >= 0) merged[at] = multT;
+          }
+          return;
+        }
         Object.entries(t.gives).forEach(([k, v]) => { p.gives[k] = (p.gives[k] || 0) + v; });
-        return false;
       });
+      model.chargeTiers = merged;
     }
     if (model.chargeTiers.length) rep.push(`单笔充值：${model.chargeTiers.length} 档`); else miss.push('单笔充值');
 
@@ -531,6 +701,25 @@ window.PARSER = (function () {
     }
     rep.push(`累计充值：${model.cumCharge.length} 档`);
 
+    /* ---------- 12.5 复合条件档里的专属纳贤令 ----------
+       「累计充值18888元宝，且累计消费达到28888元宝，可领取奖励：…陆文漪纳贤令*3」
+       「单笔充值12800元宝，且累计参与纳贤10次，可领取奖励：陆文漪纳贤令*10」
+       这类句子带「且」，上面的 cumRe / chargeRe 要求「充值X元宝，可领取奖励」紧跟，
+       整档匹配不到，专属令就整段丢了。
+       这里单独兜底：只要是「…且…，可领取奖励：…专令…」，
+       就把里面的专属令提取成带 only 的白送令（人工精测也是按「条件一达标就领」算）。
+       只提专属令，不动普通令/红包，避免改变既有充值返利与价格基线。 */
+    const mixRe = /(?:累计|单笔)充值\d+元宝[，,]\s*且[^，。]+[，,]\s*可领取奖励：([^。]+)[。]/g;
+    while ((mm = mixRe.exec(text))) {
+      const body = mm[1].replace(/[，,]\s*(?:每日)?限完成\d+次.*$/, '');
+      const g = toGives(body);
+      Object.keys(g).forEach((k) => {
+        if (!/^专令:/.test(k)) return;
+        const hero = k.slice(3);
+        model.freeGains.push({ cur: k, qty: g[k], from: '复合条件档达标', only: [hero] });
+      });
+    }
+
     /* ---------- 13. 每日消费 / 累计消费 ---------- */
     const sText = secText(/消费/) || text;
     const dayRe = /每日(?:消费达到|重置，消费)(\d+)元宝[，,]\s*可领取奖励：(.+?)[。]/g;
@@ -558,6 +747,28 @@ window.PARSER = (function () {
     rep.push(`消费档位：每日 ${model.dailyTiers.length} 档 / 累计 ${model.cumSpend.length} 档`);
     if (!model.dailyTiers.length) miss.push('每日消费');
 
+    /* ---------- 13.5 消费送宝玉（整期累计，章节标题常不含「消费」） ----------
+       秋华 / 小雪 / 中秋期都有「累计消费 3万/6万/10万/20万 → 传世宝玉 3/3/4/10」，
+       写在《传世宝玉》章节里，上面的 sText（只取标题含消费的章节）抓不到。
+       这里对全文兜底扫描「累计消费X → 宝玉」这一类，供消费规划提示补到档位。
+       用 need|gives 去重，避免同一档在公告里出现两次被记两遍。 */
+    const jadeSpendSeen = new Set();
+    const jsRe = /累计消费(?:达到)?(\d+)元宝[，,]\s*可领取奖励：([^。]*?)[。]/g;
+    while ((mm = jsRe.exec(text))) {
+      const body = mm[2].replace(/[，,]\s*(?:累计)?限完成\d+次.*$/, '');
+      if (!/宝玉/.test(body)) continue;
+      const gives = toGives(body);
+      if (!gives['传世宝玉'] && !gives['宝玉碎片']) continue;
+      const need = +mm[1];
+      const key = need + '|' + JSON.stringify(gives);
+      if (jadeSpendSeen.has(key)) continue;
+      jadeSpendSeen.add(key);
+      model.jadeSpend.push({ need, gives, note: body.slice(0, 36) });
+    }
+    if (model.jadeSpend.length) {
+      rep.push(`消费送宝玉：${model.jadeSpend.map((t) => `${t.need}→${t.gives['传世宝玉'] || t.gives['宝玉碎片']}玉`).join('、')}`);
+    }
+
     /* ---------- 14. 抵价券面额 ---------- */
     const cpRe = /抵价券\s*[（(]\s*(\d+)\s*-\s*(\d+)\s*[）)]/g;
     while ((mm = cpRe.exec(text))) {
@@ -567,10 +778,40 @@ window.PARSER = (function () {
     if (Object.keys(model.coupons).length) rep.push(`抵价券：${Object.values(model.coupons).map((c) => c.name).join('、')}`);
     else miss.push('抵价券');
 
+    /* ---------- 14.6 福喵纳财：每日消费返利 ----------
+       次日按「昨日累计消费 × 返利比例」返还绑定元宝，封顶每日上限。
+       比例由当日完成的任务叠加：3 局游戏 / 充值 600 / 充值 12800 / 消费 1w。
+       充值侧那两档依赖逐日充值分布，方案里按「能达到即计」处理；
+       这里先把规则和上限从公告解析出来，不再当未建模玩法丢掉。 */
+    const fmSec = secs.find((s) => /福喵/.test(s.title));
+    if (fmSec) {
+      const fmText = ls.slice(fmSec.idx, fmSec.end).join('\n');
+      const capM = /每日返利上限[：:]\s*(\d+)\s*元宝/.exec(fmText);
+      const tasks = [];
+      const gm = /完成(\d+)局游戏[^\n]*?\|\s*(\d+)%/.exec(fmText);
+      if (gm) tasks.push({ kind: 'games', need: +gm[1], rate: +gm[2] / 100, label: `完成${gm[1]}局游戏` });
+      const cmRe = /累计充值(\d+)元宝[^\n]*?\|\s*(\d+)%/g;
+      let cm;
+      while ((cm = cmRe.exec(fmText))) {
+        tasks.push({ kind: 'charge', need: +cm[1], rate: +cm[2] / 100, label: `累计充值${cm[1]}` });
+      }
+      const sm = /累计消费(\d+)元宝[^\n]*?\|\s*(\d+)%/.exec(fmText);
+      if (sm) tasks.push({ kind: 'spend', need: +sm[1], rate: +sm[2] / 100, label: `累计消费${sm[1]}` });
+      if (tasks.length) {
+        model.fumiao = {
+          enabled: true,
+          cap: capM ? +capM[1] : 10000,
+          tasks,
+          note: '次日按昨日累计消费×当日返利比例返还绑定元宝，不超过每日上限',
+        };
+        rep.push(`福喵纳财返利：上限 ${model.fumiao.cap}/日，${tasks.map((t) => `${t.label} +${Math.round(t.rate * 100)}%`).join('、')}`);
+      }
+    }
+
     /* ---------- 15. 未建模玩法 ---------- */
     const KINDS = [
       [/砸蛋/, '幸运砸蛋'], [/绘卷/, '群英绘卷'], [/连连看/, '欢乐连连看'],
-      [/福喵/, '福喵纳财'], [/积惠特卖/, '积惠特卖'], [/幸运夺宝/, '幸运夺宝'],
+      [/积惠特卖/, '积惠特卖'], [/幸运夺宝/, '幸运夺宝'],
       [/排行榜/, '排行榜'], [/祈愿/, '祈愿'],
     ];
     secs.forEach((s) => {
@@ -590,6 +831,8 @@ window.PARSER = (function () {
       const who = s.replace(/纳贤令$/, '').trim();
       /* 剥掉「玩家可使用纳贤令」这类句子碎片，只留真正的池名前缀 */
       if (!who || /使用|获得|购买|领取|消耗|专属|玩家|商城|可|或|该|在|于|的/.test(who)) return;
+      /* 已经折算成「专令:武将」的专属令，不再当「未折算定向令」误报 */
+      if (exclusiveHero(s)) return;
       directLing.add(who);
     });
     if (directLing.size) {
@@ -751,6 +994,15 @@ window.PARSER = (function () {
 
     P.systems = built;
 
+    /* ---- 草船借箭（概率武将期望定价的数据源） ----
+       ccbjTargets 让概率武将进目标库、能被点选；它们没有直接购买渠道
+       （靠方案消费产草人→抽箭矢→兑换），needOf 里自然落到 kind=null，
+       由 ccbjPlan 单独判定覆盖，不会误报「本期无确定途径」。 */
+    P.ccbj = model.ccbj || null;
+    P.ccbjTargets = model.ccbj ? (model.ccbj.exchange || []).map((x) => ({
+      name: x.name, arrows: x.arrows, limit: x.limit,
+    })) : [];
+
     /* ---- shops ---- */
     ['jade', 'qifu', 'ruyi', 'jinxiu', 'crystal'].forEach((id) => {
       const sp = (P.shops || []).find((s) => s.id === id);
@@ -787,7 +1039,10 @@ window.PARSER = (function () {
     }
     P.dailyTiers = (model.dailyTiers || []).slice();
     P.cumSpend = (model.cumSpend || []).slice();
+    P.jadeSpend = (model.jadeSpend || []).slice();
     P.redPackets = model.redPackets || {};
+    P.fumiao = model.fumiao || null;
+    if (P.fumiao) log.push(`福喵纳财返利已建模：上限 ${P.fumiao.cap}/日`);
     if (!P.chargeTiers.length) log.push('本期末解析到充值档位 → 置空');
     Object.keys(P.redPackets).forEach((k) => {
       const r = P.redPackets[k];

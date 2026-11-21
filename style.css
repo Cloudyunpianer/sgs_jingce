@@ -274,6 +274,8 @@ button{font-family:inherit}
 .day-plan th:nth-child(4),.day-plan td:nth-child(4){width:86px}
 .day-plan td{word-break:break-word}
 .day-plan td.chg{color:var(--ink-2);line-height:1.5}
+.day-plan td .day-tier{margin-top:3px;font-size:9.3px;color:var(--accent);white-space:normal;line-height:1.35}
+.day-plan td .day-cpn{margin-top:3px;font-size:9.3px;color:var(--ink-3);white-space:normal;line-height:1.35}
 .day-plan tbody tr:hover td{background:#fafbfc}
 .audit-block{margin-top:6px}
 .sumline{margin-top:10px;padding:8px 10px;background:var(--accent-soft);border:1px solid #f0dcdc;
@@ -350,6 +352,23 @@ button{font-family:inherit}
 .st.off{color:#8b929e;background:#f5f6f8;border:1px solid var(--line)}
 .out-note{font-size:10.4px;color:var(--ink-3);line-height:1.55;margin-top:6px}
 .out-note b{color:var(--accent);font-variant-numeric:tabular-nums}
+.out-table.rhythm td:nth-child(2),.out-table.rhythm td:nth-child(3),.out-table.rhythm td:nth-child(4){text-align:right}
+.out-table.rhythm tr.hl-row td{background:var(--accent-soft);font-weight:500}
+.out-table.rhythm td:nth-child(5){text-align:left;color:var(--ink-3)}
+/* 累计消费送宝玉补档表：门槛/玉/价值右对齐，状态左对齐 */
+.out-table.jade-topup td:nth-child(1),.out-table.jade-topup td:nth-child(2),.out-table.jade-topup td:nth-child(3){text-align:right}
+.out-table.jade-topup td:nth-child(4){text-align:left;color:var(--ink-2)}
+.out-table.jade-topup tr.done td{color:var(--ink-3)}
+.out-table.jade-topup tr.done td:first-child::before{content:'✓ ';color:#2f7a4f;font-weight:700}
+.out-table.jade-topup tr.next td{background:var(--accent-soft);font-weight:500}
+.out-table.jade-topup tr.far td{opacity:.66}
+/* 草船借箭概率武将覆盖表：沿用 rhythm 列对齐，首列武将名左对齐，达标行打勾 */
+.out-table.ccbj-topup td:nth-child(1){text-align:left}
+.out-table.ccbj-topup tr.done td{color:var(--ink-3)}
+.out-table.ccbj-topup tr.done td:first-child::before{content:'✓ ';color:#2f7a4f;font-weight:700}
+.out-table.ccbj-topup tr.far td{opacity:.7}
+.out-note.jade-tip{margin-top:7px;padding:6px 8px;border-left:2px solid var(--accent);background:var(--accent-soft);border-radius:0 4px 4px 0;color:var(--ink-2)}
+.out-note .hl-num{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
 .free-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
 .free-chips span{font-size:9.8px;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ink-2);background:#fafbfc}
 .free-chips span.off{color:var(--ink-3);text-decoration:line-through;background:#fff}

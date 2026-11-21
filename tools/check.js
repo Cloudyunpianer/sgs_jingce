@@ -304,7 +304,10 @@ ok('期初抵扣后总花费下降', sJade.money < sBase.money,
 const sLamp = S.build(['任婉'], { days: 9, stock: { items: { 祈福灯: 100 } } });
 eq('期初 100 灯后只需买 83 灯', sLamp.audit[0].buy, 83);
 const sNx = S.build(['谋钟会'], { days: 9, stock: { items: { 纳贤令: 50 } } });
-eq('期初 50 令后只需买 43 令', sNx.audit[0].buy, 43);
+/* 34（原 43）：自洽校验从「只比档位返」改成「比档位返 + 夺宝兑换」后，
+   夺宝换来的令不再被误判成「假设超过实际」，收敛解被保留，少买 9 个令。
+   核对表仍是 50+25+1+10+34=120，方案完整。 */
+eq('期初 50 令后只需买 34 令', sNx.audit[0].buy, 34);
 ok('期初 + 白送 + 档位 + 购买 = 需求', [sJade, sLamp, sNx]
   .every((r) => r.audit.every((a) => a.total >= a.need - 1e-6)),
   [sJade, sLamp, sNx].map((r) => r.audit.map((a) => `${a.label} ${a.stock}+${a.free}+${a.tier}+${a.buy}`).join('/')).join(' | '));
@@ -422,11 +425,11 @@ ok('未建模玩法被标记', PM.unsupported.some((u) => u.name === '幸运砸�
 const SAMPLE_DIR = path.join(root, 'samples');
 const SAMPLES = [
   { file: '20260904_8061_5810.md', days: 9, targets: 68, money: 6007, note: '开学焕新' },
-  { file: '20260910_1235_5818.md', days: 5, targets: 32, money: 1212, note: '秋日活动' },
+  { file: '20260910_1235_5818.md', days: 5, targets: 32, money: 1042, note: '秋日活动' },
   { file: '20260916_7285_4514.md', days: 9, targets: 61, money: 3000, note: '中秋砸蛋' },
   { file: '20260922_3527_1115.md', days: 3, targets: 18, money: 1594, note: '金秋预热' },
   { file: '20260929_3980_1514.md', days: 10, targets: 60, money: 5978, note: '金秋盛典' },
-  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 1152, note: '初冬纳贤' },
+  { file: '20261113_2450_3910.md', days: 5, targets: 32, money: 1072, note: '初冬纳贤' },
 ];
 console.log('\n— 真实样本回归 —');
 SAMPLES.forEach((sp) => {
@@ -450,21 +453,28 @@ SAMPLES.forEach((sp) => {
     plan.charge.yb + 1e-6 >= plan.netSpend,
     `到账 ${money(plan.charge.yb)} ≥ 净消费 ${money(plan.netSpend)}`);
   {
-    /* 右栏「到账」和倍率表同为「总元宝」口径：可花本金 + 单笔档返的绑元。
-       有双倍箱的期，倍率表按理论最优选 B（绑元）、方案按目标需求选路线，
-       两者路线可能不同，总额也就不同——不强求相等，但到账必须自洽：
-       ① 到账 = 可花本金 + 返利；② 返利确实来自走的 A 路线的 gives；
-       ③ 返利没混进可花余额（否则「余」双算）。 */
+    /* 右栏「到账」= 可花总额 = 本金 + 红包返利 + 福喵返利（+ 首充双倍）。
+       返利这次真进预算了（绑定元宝不在回冲品类里，不会双算），所以：
+       ① 到账 = 本金 + 红包 + 福喵 + 首充双倍 = spendableYb；
+       ② 红包返利确实来自走的 A 路线的 gives；③ 福喵返利非负、有上限。 */
     const chg = plan.charge;
     const arrival = chg.arrivalYb != null ? chg.arrivalYb : chg.yb;
     const rebate = chg.rebateYb || 0;
-    const bindFromA = (chg.picks || []).filter((x) => !x.alt && x.t && x.t.gives)
-      .reduce((a, x) => a + (x.t.gives['绑定元宝'] || 0) * x.n, 0);
+    const fm = chg.fumiaoYb || 0;
+    const fd = chg.firstDoubleYb || 0;
+    /* 红包可能来自 gives（可重复）或 onceGives（整期限1次，只计1份）。
+       两者都要算进 A 路线返利，否则限1次的红包会被误判成「凭空的钱」。 */
+    const bindFromA = (chg.picks || []).filter((x) => !x.alt && x.t)
+      .reduce((a, x) => a + ((x.t.gives || {})['绑定元宝'] || 0) * x.n
+        + (x.n > 0 ? ((x.t.onceGives || {})['绑定元宝'] || 0) : 0), 0);
+    const fmCap = P.fumiao && P.fumiao.enabled ? P.fumiao.cap : 0;
     ok(`${sp.note} 右栏到账口径自洽`,
-      Math.abs(arrival - chg.yb - rebate) < 1e-6
+      Math.abs(arrival - chg.yb - rebate - fm - fd) < 1e-6
+        && Math.abs((chg.spendableYb != null ? chg.spendableYb : arrival) - arrival) < 1e-6
         && Math.abs(rebate - bindFromA) < 1e-6
+        && fm >= -1e-6 && fm <= (fmCap || Infinity) * (P.meta.days || 99) + 1e-6
         && arrival + 1e-6 >= chg.yb,
-      `到账 ${money(arrival)} = 可花 ${money(chg.yb)} + 返利 ${money(rebate)}，A 路线给 ${money(bindFromA)}`);
+      `到账 ${money(arrival)} = 本金 ${money(chg.yb)} + 红包 ${money(rebate)} + 福喵 ${money(fm)}，A 路线给 ${money(bindFromA)}`);
   }
   ok(`${sp.note} 逐项不缺料`,
     plan.audit.every((a) => a.total >= a.need - 1e-6),
@@ -501,6 +511,20 @@ SAMPLES.forEach((sp) => {
       ok(`${sp.note} ${k} 按期望 ${rp.ev} 折`, rp.ev >= rp.min && rp.ev <= rp.max && rp.ev > 0,
         `区间 ${rp.min}~${rp.max}，期望 ${rp.ev}`);
     });
+  }
+
+  {
+    /* 福喵纳财：公告写了「每日消费返利、上限 1w」就不能再当未建模玩法。
+       返利比例必须逐项解析出来，且 3 局 / 充值 600 / 消费 1w 三档齐全——
+       手搓攻略「每天消费 1w 次日返 1200」正是靠 5%+5%+2%。 */
+    const hasFm = /福喵/.test(txt);
+    const fm = P.fumiao;
+    const kinds = (fm && fm.tasks || []).map((t) => t.kind);
+    ok(`${sp.note} 福喵返利建模`,
+      !hasFm || (!!fm && fm.cap > 0 && ['games', 'charge', 'spend'].every((k) => kinds.includes(k))),
+      fm ? `上限 ${fm.cap}/日 · ${kinds.join('/')}` : '公告有福喵但未建模');
+    if (hasFm) ok(`${sp.note} 福喵不再列为未建模`,
+      !(window.PRESET.unsupported || []).some((u) => /福喵/.test(u.name)));
   }
 
   {
@@ -625,6 +649,281 @@ SAMPLES.forEach((sp) => {
     }
   }
 });
+
+/* ---------------- 断言 7：锁定充值时的收敛与候选选择（¥132 回归） ---------------- */
+console.log('\n--- 断言 7：锁定充值收敛 ---');
+{
+  /* 初冬这单：用户锁定 ¥132（1200 档×1 + 6000 档×2）要星曹仁。
+     两个独立的 bug 叠加会报「还差 67352 元宝」：
+       ① build() 锁定后所有候选 money 都是 132，只比 money 就永远挑第 0 轮
+          （返利还没回冲、need 最大的那个）。
+       ② solveOnce 的自洽校验拿 used（含夺宝兑换的令）去比 rw（只含档位返的令），
+          收敛解被误判「假设>实际」剔除，又退回第 0 轮。
+     任一处回归都会让锁定方案报价虚高一倍以上。 */
+  const md132 = 'samples/20261113_2450_3910.md';
+  if (fs.existsSync(md132)) {
+    const txt132 = fs.readFileSync(md132, 'utf8');
+    const ps = window.PARSER.parse(txt132);
+    window.PARSER.apply(ps.model);
+    EN.reset(); T.reset();
+    const tiers = window.PRESET.chargeTiers;
+    const idxOf = (need) => tiers.findIndex((t) => t.need === need);
+    const lock = [{ i: idxOf(1200), n: 1 }, { i: idxOf(6000), n: 2 }];
+    const r = window.SCHED.build(['星曹仁'], {
+      days: window.PRESET.meta.days, stock: {}, lockCharge: lock,
+    });
+    eq('¥132 锁定仍锁在原组合', Math.round(r.money), 132);
+    eq('¥132 锁定方案完整不缺件', r.shortItems.length, 0);
+    ok('¥132 锁定收敛到回冲后的解',
+      r.charge && Math.abs(r.netSpend - 24052) < 1e-6,
+      `净消费 ${Math.round(r.netSpend)}（回归前 80552 / 修复中间态 35552）`);
+    ok('¥132 锁定已选出夺宝回冲解',
+      ((r.audit[0] || {}).buy) === 49,
+      `买 ${(r.audit[0] || {}).buy} 令（回归前 66 / 收敛后 49）`);
+    /* 红包返利 6770 + 福喵返利 ~4754 都进可花总额，缺口从 10852 清零。
+       这两笔是公告明确的真实收益，之前只展示不进预算，才报「还差一万多」。 */
+    ok('¥132 锁定返利已进可花总额',
+      r.charge && r.charge.fumiaoYb > 0 && r.charge.rebateYb > 0
+        && r.charge.spendableYb > r.charge.yb,
+      `本金 ${money(r.charge.yb)} + 红包 ${money(r.charge.rebateYb)} + 福喵 ${money(r.charge.fumiaoYb)} = 可花 ${money(r.charge.spendableYb)}`);
+    ok('¥132 锁定缺口清零（不再报还差一万多）',
+      (r.overBudget || 0) < 1e-6,
+      `净消费 ${money(r.netSpend)} - 可花 ${money(r.charge.spendableYb)} = 缺口 ${money(r.overBudget || 0)}`);
+    ok('¥132 锁定首充双倍默认不开启',
+      (r.charge.firstDoubleYb || 0) === 0,
+      `首充双倍 ${money(r.charge.firstDoubleYb || 0)}（公告未写明，默认关）`);
+  }
+}
+
+{
+  /* 限1次的活动红包不能被按天重复参与（小雪期用户报障）：
+     单笔 3000 同时挂「纳贤令×3 / 每日限1次」和「大红包 / 限完成1次」。
+     以前合并进 gives，¥30×7 会把 6150 红包算成 43050，倍率虚高到 4.33×。 */
+  const mini = [
+    '## 充值活动',
+    '单笔充值3000元宝，可领取奖励：纳贤令*3，每日限完成1次。',
+    '单笔充值3000元宝，可领取奖励：绑定元宝*6150，限完成1次。',
+    '',
+    '**测试红包**',
+    '',
+    '| 金额 | 概率 |',
+    '| --- | --- |',
+    '| 绑定元宝*5000 | 100% |',
+  ].join('\n');
+  const ps = window.PARSER.parse(mini);
+  const tier = ps.model.chargeTiers.find((t) => t.need === 3000);
+  ok('限1次红包从主档分离到 onceGives',
+    tier && (tier.gives['绑定元宝'] || 0) === 0
+      && ((tier.onceGives || {})['绑定元宝'] || 0) === 6150,
+    `gives=${JSON.stringify(tier && tier.gives)} onceGives=${JSON.stringify(tier && tier.onceGives)}`);
+  ok('可重复奖励仍留在主档 gives',
+    tier && (tier.gives['纳贤令'] || 0) === 3 && tier.perDay === 1,
+    `纳贤令 ${tier && tier.gives['纳贤令']} perDay ${tier && tier.perDay}`);
+
+  /* 走一遍真实解析链路验证倍率表口径：apply→breakdown。
+     为避免污染后续样本，先备份相关全局，验完恢复。 */
+  const backup = {
+    chargeTiers: P.chargeTiers, redPackets: P.redPackets, coupons: P.coupons,
+    systems: P.systems, dailyTiers: P.dailyTiers, cumSpend: P.cumSpend,
+    cumCharge: P.cumCharge, units: R.unitTable(),
+  };
+  window.PARSER.apply(ps.model);
+  R.resetUnit(); EN.reset(); T.reset();
+  const r7 = R.combo([{ need: 3000, n: 7 }], 8);
+  const bd7 = R.breakdown(r7, 8);
+  eq('¥30×7 红包只计1份不重复参与', Math.round(bd7.b.bang), 6150);
+  eq('¥30×7 纳贤令仍按7份累乘', Math.round(bd7.b.naxian), 21000);
+  ok('¥30×7 倍率回落到合理区间',
+    bd7.ratioAll < 3 && bd7.ratioAll > 1,
+    `${bd7.ratioAll.toFixed(2)}×（回归前 4.33×）`);
+  /* 恢复全局，避免影响 check.js 后续若有断言 */
+  P.chargeTiers = backup.chargeTiers; P.redPackets = backup.redPackets;
+  P.coupons = backup.coupons; P.systems = backup.systems;
+  P.dailyTiers = backup.dailyTiers; P.cumSpend = backup.cumSpend;
+  P.cumCharge = backup.cumCharge; R.resetUnit(); EN.reset(); T.reset();
+}
+
+{
+  /* 小雪期用户报障：倍率表「推荐」方案会把单一档位买到天花板（¥30×8、
+     ¥128×6），其中 ¥128/¥328/¥648 只有绑定元宝、倍率恒定 2.0×，纯属凑金额，
+     用户要求「只买到有意义的档位」。修复：每档算推荐上限 prefCap——
+     纯绑元档限 1 次，带券/令的每日档可买多次（≤3），靠多档组合堆金额。 */
+  const xue = 'samples/20261121_xiaoxue.md';
+  const xueAlt = 'G:/download/2026-11-20 11.21-11.28 小雪活动 新将陆文漪&孙和 侯昭宁限定&李昭仪传说 草船借箭活动上线.md';
+  const src = fs.existsSync(xue) ? xue : (fs.existsSync(xueAlt) ? xueAlt : null);
+  if (src) {
+    const txt = fs.readFileSync(src, 'utf8');
+    const ps = window.PARSER.parse(txt);
+    const backup = {
+      chargeTiers: P.chargeTiers, redPackets: P.redPackets, coupons: P.coupons,
+      systems: P.systems, dailyTiers: P.dailyTiers, cumSpend: P.cumSpend,
+      cumCharge: P.cumCharge, fumiao: P.fumiao, jadeSpend: P.jadeSpend, units: R.unitTable(),
+    };
+    window.PARSER.apply(ps.model);
+    R.resetUnit(); EN.reset(); T.reset();
+    const days = P.meta.days;
+    const tiers = R.tierList(days);
+
+    const t128 = tiers.find((t) => t.need === 12800);
+    const t30 = tiers.find((t) => t.need === 3000);
+    const t328 = tiers.find((t) => t.need === 32800);
+    const t648 = tiers.find((t) => t.need === 64800);
+
+    /* 自选福袋按最高价值折算（用户口径）：¥128 档的「小雪武将自选福袋」
+       名单里有「武将招募令*10」，折成定向招募令 10 个 = 10000 元宝，归 sel15 列。
+       这档从此「每次充值有对应道具拿」，不再被误判为无额外奖励的纯绑元档。 */
+    ok('¥128 档自选福袋折算进 gives',
+      (P.chargeTiers[t128.i].gives || {})['定向招募令'] === 10,
+      `¥128 gives=${JSON.stringify(P.chargeTiers[t128.i].gives)}`);
+    const bd128 = R.breakdown(R.combo([{ i: t128.i, n: 1 }], days), days);
+    ok('¥128 倍率含福袋价值（不再恒定 2.0×）',
+      bd128.b.sel15 === 10000 && bd128.ratioAll > 2.6,
+      `15-1=${money(bd128.b.sel15)} 倍率=${bd128.ratioAll.toFixed(2)}×`);
+    ok('福袋折算只作用于充值档，不污染消费档',
+      !P.dailyTiers.some((t) => Object.keys(t.gives || {}).some((k) => /定向/.test(k))),
+      '消费档的定向福袋保留 only 口径，不折成通用令回冲');
+
+    /* 推荐上限：真·纯绑元大档（¥328/¥648）限 1 次；
+       ¥128 因有福袋额外奖励、¥30 因有券令，都是「有意义」档，可买多次。 */
+    ok('纯绑元大档 prefCap=1（¥328/¥648）',
+      t328 && t328.prefCap === 1 && t648 && t648.prefCap === 1,
+      `¥328 prefCap=${t328 && t328.prefCap} / ¥648 prefCap=${t648 && t648.prefCap}`);
+    ok('¥128 有福袋后 prefCap>1（变成有意义档）',
+      t128 && t128.prefCap > 1,
+      `¥128 prefCap=${t128 && t128.prefCap}（真实 cap=${t128 && t128.cap}）`);
+    ok('带券令的每日档 prefCap>1（¥30 仍可买多次）',
+      t30 && t30.prefCap > 1,
+      `¥30 prefCap=${t30 && t30.prefCap}（真实 cap=${t30 && t30.cap}）`);
+    ok('真实 cap 未被改动（全买满链路不受影响）',
+      t30 && t30.cap > t30.prefCap,
+      `¥30 真实 cap=${t30 && t30.cap} > 推荐 prefCap=${t30 && t30.prefCap}`);
+
+    /* bestMix 各预算档的方案：任何单档购买数不得超过 prefCap */
+    const maxBudget = Math.max(200, (P.chargeTiers || []).reduce((a, t) => {
+      const cap = t.total > 0 ? t.total : (t.perDay ? t.perDay * days : 1);
+      return a + (t.need / 100) * cap;
+    }, 0));
+    const pool = R.bestMix(days, maxBudget, 260, { minShare: 0 });
+    let worst = 0, worstLabel = '';
+    pool.forEach((x) => (x.combo.picks || []).forEach((pp) => {
+      const tc = tiers.find((t) => t.i === pp.tier.i);
+      const lim = tc ? tc.prefCap : 1;
+      if (pp.n > lim && pp.n - lim > worst) {
+        worst = pp.n - lim;
+        worstLabel = `¥${pp.tier.rmb}×${pp.n} > prefCap ${lim}`;
+      }
+    }));
+    ok('阶梯方案：没有任何档位超过推荐上限',
+      worst === 0,
+      worst ? worstLabel : `已检查 ${pool.length} 个方案，单档最高不超 prefCap`);
+    const bigPile = pool.find((x) => (x.combo.picks || []).some((pp) => pp.tier.need >= 32800 && pp.n > 1));
+    ok('阶梯方案：纯绑元大档（¥328/¥648）没有重复购买',
+      !bigPile,
+      bigPile ? bigPile.combo.picks.map((pp) => `¥${pp.tier.rmb}×${pp.n}`).join('+') : '¥328/¥648 均各≤1次');
+    const meaningful128 = pool.some((x) => (x.combo.picks || []).some((pp) => pp.tier.need === 12800 && pp.n > 1));
+    ok('阶梯方案：¥128 有福袋后允许重复买（凑有意义档）',
+      meaningful128,
+      meaningful128 ? '已出现 ¥128×2 及以上的阶梯组合' : '未出现（可能被更高倍率档挤掉，非错误）');
+
+    /* 消费节奏对比：一次性 vs 分天，判断哪种能拿到更多每日档奖励 */
+    const rhythms = S.spendRhythm(50000, days);
+    eq('消费节奏给出三种策略', rhythms.length, 3);
+    const lump = rhythms.find((x) => x.key === 'lump');
+    const even = rhythms.find((x) => x.key === 'even');
+    const top = rhythms.find((x) => x.key === 'top');
+    ok('一次性花完只吃一次每日档', lump && lump.daysUsed === 1,
+      `一次性用 ${lump && lump.daysUsed} 天，命中 ${lump && lump.hitCount} 档`);
+    ok('分天花命中档位多于一次性', even && lump && even.hitCount > lump.hitCount,
+      `一次性 ${lump && lump.hitCount} 档 vs 平摊 ${even && even.hitCount} 档`);
+    ok('顶门槛策略不劣于平摊', top && even && top.hitCount >= even.hitCount,
+      `顶门槛 ${top && top.hitCount} 档 vs 平摊 ${even && even.hitCount} 档`);
+    /* 总消费不足以单日顶最高档时，顶门槛不能退化成一次性 */
+    const small = S.spendRhythm(21000, days);
+    const smallTop = small.find((x) => x.key === 'top');
+    const smallLump = small.find((x) => x.key === 'lump');
+    ok('低预算时顶门槛不退化成一次性',
+      smallTop && smallTop.daysUsed > 1 && smallTop.hitCount > smallLump.hitCount,
+      `顶门槛用 ${smallTop && smallTop.daysUsed} 天命中 ${smallTop && smallTop.hitCount} 档，一次性 ${smallLump && smallLump.hitCount} 档`);
+
+    /* 消费送宝玉：整期累计消费到 3万/6万/10万/20万 → 送传世宝玉 3/3/4/10。
+       这些档写在《传世宝玉》章节，标题不含「消费」，旧解析整段漏掉，
+       导致工具不知道「消费能换玉」、更不会提示补到宝玉档。 */
+    eq('小雪期解析出 4 档消费送宝玉', (P.jadeSpend || []).length, 4);
+    eqs('宝玉档门槛 3万→3玉',
+      (P.jadeSpend[0].need === 30000 && P.jadeSpend[0].gives['传世宝玉'] === 3), true);
+    eqs('宝玉档门槛 20万→10玉',
+      (P.jadeSpend[3].need === 200000 && P.jadeSpend[3].gives['传世宝玉'] === 10), true);
+    /* 补档分析：净消费 2.5 万，下一档是 3 万，补 5000 拿 3 玉 */
+    const jt = S.spendJadeTopup(25000);
+    ok('补档分析：给出下一档与差额',
+      jt.on && jt.next && jt.next.need === 30000 && Math.round(jt.next.gap) === 5000,
+      `下一档 ${jt.next && jt.next.need}，差 ${jt.next && Math.round(jt.next.gap)}`);
+    eq('补档分析：补 5000 得 3 玉', jt.topup.jade, 3);
+    ok('补档分析：已达成档标记正确',
+      S.spendJadeTopup(30000).tiers[0].reached === true
+        && S.spendJadeTopup(30000).tiers[1].reached === false,
+      '3 万达成第 1 档、未达成第 2 档');
+    ok('补档分析：全额拿满后无下一档',
+      S.spendJadeTopup(200000).next === null,
+      '20 万后 next=null');
+    ok('消费送宝玉不混入 cumSpend 回冲',
+      !(P.cumSpend || []).some((t) => t.gives && t.gives['传世宝玉']),
+      `cumSpend ${(P.cumSpend || []).length} 档，无一含宝玉`);
+
+    /* 专属纳贤令字段判断（用户强调「首发武将有专属令、注意字段选择」）：
+       「陆文漪纳贤令」必须识别成「专令:陆文漪」只对陆文漪生效，
+       不能误折成通用纳贤令（那样任何武将都能用，报价虚低）。 */
+    ok('专令：礼包里的陆文漪纳贤令识别为专属令',
+      S.catalog().some((p) => (p.gives || {})['专令:陆文漪'] > 0)
+        && !S.catalog().some((p) => /纳贤折扣礼包/.test(p.name || '') && (p.gives || {})['纳贤令'] > 0),
+      `catalog 专令礼包：${S.catalog().filter((p) => (p.gives || {})['专令:陆文漪'] > 0).map((p) => p.name).join('、')}`);
+    ok('专令：复合档白送专属令带 only 字段',
+      (P.freeGains || []).some((f) => f.cur === '专令:陆文漪' && (f.only || []).includes('陆文漪')),
+      `专令白送 ${(P.freeGains || []).filter((f) => /^专令:/.test(f.cur)).reduce((a, f) => a + f.qty, 0)} 个`);
+    /* 首发将低价：陆文漪有专属令抵扣，应比同池的李昭仪（无专属令）便宜 */
+    const rLwy = S.build(['陆文漪'], { days: P.meta.days, stock: { coupons: {}, yb: 0, items: {} } });
+    const rLzy = S.build(['李昭仪'], { days: P.meta.days, stock: { coupons: {}, yb: 0, items: {} } });
+    const aLwy = (rLwy.audit || []).find((a) => a.key === '纳贤令');
+    ok('专令：陆文漪纳贤令有白送抵扣',
+      aLwy && aLwy.free > 0,
+      `陆文漪 free=${aLwy && aLwy.free}，李昭仪 free=${((rLzy.audit || []).find((a) => a.key === '纳贤令') || {}).free}`);
+    ok('专令：专属令不误折通用（李昭仪无白送令）',
+      ((rLzy.audit || []).find((a) => a.key === '纳贤令') || {}).free === 0,
+      `李昭仪报价 ¥${Math.round(rLzy.money)} > 陆文漪 ¥${Math.round(rLwy.money)}`);
+
+    /* 草船借箭：概率武将期望定价（用户给的 9 张人工精测图）
+       公告箭矢概率表加权 = 150/抽，保底 80；孙和 12000 箭矢 = 期望 80 抽。
+       孙和/徐馨进目标库、noRoute 不误报，覆盖情况由 ccbjPlan 给出。 */
+    ok('草船：公告箭矢期望=150、保底=80（对齐人工图）',
+      P.ccbj && P.ccbj.arrow.ev === 150 && P.ccbj.arrow.min === 80,
+      `ev=${P.ccbj && P.ccbj.arrow.ev}, min=${P.ccbj && P.ccbj.arrow.min}`);
+    ok('草船：概率武将进目标库且不误报无渠道',
+      EN.buildLibrary().has('孙和') && EN.buildLibrary().has('徐馨')
+        && !(S.build(['孙和'], { days: P.meta.days, stock: { coupons: {}, yb: 0, items: {} } }).noRoute || []).includes('孙和'),
+      '孙和/徐馨在库，选中后 noRoute 不含孙和');
+    /* 期望抽数：孙和 12000/150=80；草人不足时给出补档步骤 */
+    const ccEmpty = S.ccbjPlan(['孙和'], { charge: { yb: 0 }, netSpend: 0 }, 8);
+    ok('草船：孙和期望抽数=80、空方案判定不足',
+      ccEmpty.targets[0].drawsEv === 80 && ccEmpty.targets[0].covered === false,
+      `drawsEv=${ccEmpty.targets[0].drawsEv}, status=${ccEmpty.targets[0].status}`);
+    ok('草船：缺口给出补档步骤（充3万+消2万可覆盖）',
+      ccEmpty.targets[0].topup && ccEmpty.targets[0].topup.steps.length > 0
+        && ccEmpty.targets[0].topup.chargeYb === 30000,
+      `补档：${ccEmpty.targets[0].topup && ccEmpty.targets[0].topup.steps.map((s) => s.type + s.need).join('+')}`);
+    /* 草人产出一档不混进普通需求：草船武将报价为 0（消费副产品），不虚增价格 */
+    ok('草船：概率武将不虚增报价（消费副产品）',
+      S.build(['孙和'], { days: P.meta.days, stock: { coupons: {}, yb: 0, items: {} } }).money === 0,
+      '单孙和报价 ¥0（靠方案消费产草人覆盖，不单独计价）');
+
+    /* 恢复全局 */
+    P.chargeTiers = backup.chargeTiers; P.redPackets = backup.redPackets;
+    P.coupons = backup.coupons; P.systems = backup.systems;
+    P.dailyTiers = backup.dailyTiers; P.cumSpend = backup.cumSpend;
+    P.cumCharge = backup.cumCharge; P.fumiao = backup.fumiao;
+    P.jadeSpend = backup.jadeSpend;
+    R.resetUnit(); EN.reset(); T.reset();
+  }
+}
 
 console.log(fail ? `\n${fail} 项不通过` : '\n全部通过');
 process.exit(fail ? 1 : 0);
