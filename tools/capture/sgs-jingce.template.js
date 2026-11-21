@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         三国杀精测 · 内嵌精测台（抓包+导入）
+// @name         吾亦能善算谋划
 // @namespace    https://github.com/Cloudyunpianer/sgs_jingce
-// @version      2.1.0
+// @version      2.2.0
 // @description  在三国杀官网页面内嵌完整精测程序，hook 后台 JSON，一键导入本期活动并精测。配套 sgs_jingce。
 // @author       sgs_jingce
 // @match        *://x.sanguosha.com/*
@@ -168,6 +168,24 @@
     return jsonToText(item.payload);
   }
 
+  /* 公告正文体检：精测的 PARSER 只认公告里的句式/表格。
+     纯配置 JSON（如 day_gifts / add_gift_config / qywx_friend_days）转成文本后
+     是一堆英文 key 和数字，命中不了这些特征，导入也是空解析——与其让用户
+     对着"什么都没有"的界面发懵，不如在导入前明确拦下并说明原因。 */
+  function looksLikeNotice(text) {
+    var t = String(text || '');
+    if (t.length < 100) return { ok: false, why: '文本太短（' + t.length + ' 字），不像公告正文' };
+    var patterns = [
+      /单笔充值\s*\d+\s*元宝/, /累计充值\s*\d+\s*元宝/, /每日消费\s*\d+\s*元宝/,
+      /累计消费\s*\d+\s*元宝/, /累计纳贤/, /可领取奖励/, /限完成\s*\d*\s*次/,
+      /纳贤令/, /充值.*倍率/, /活动时间/ ,/\|[^\n]*\|[^\n]*\|/
+    ];
+    var hit = 0;
+    patterns.forEach(function (re) { if (re.test(t)) hit++; });
+    if (hit >= 2) return { ok: true, hit: hit };
+    return { ok: false, why: '未检测到公告特征（充值档位/纳贤进度/奖励表格等），只有 ' + hit + ' 项弱特征' };
+  }
+
   /* 从抓包里自动挑「最像本期活动公告」的一条：
      URL 命中活动/公告类关键字加权，其次正文越长越可能是真公告。 */
   function pickBestCapture() {
@@ -184,8 +202,19 @@
   }
 
   // --------------------------- 导入到精测 -----------------------------------
-  function importToJingce(text) {
+  /* strict=true 时（一键导入抓包数据）先做公告体检，不像公告就拦下，
+     避免把福利配置 JSON 导进去得到一片空白。手动粘贴只警告不拦。 */
+  function importToJingce(text, strict) {
     if (!text || !text.trim()) { log('没有可导入的文本'); return false; }
+    var chk = looksLikeNotice(text);
+    if (!chk.ok) {
+      if (strict) {
+        log('✗ 已拦下：' + chk.why);
+        setStatus('✗ 这段数据不是公告正文 — 请到公告详情页抓取');
+        return false;
+      }
+      log('⚠ 提示：' + chk.why + '（仍按你的手动输入导入）');
+    }
     if (!iframe || !iframe.contentWindow) { log('精测程序未就绪'); return false; }
     iframe.contentWindow.postMessage({ __sgsCapture: 1, type: 'import', text: text }, '*');
     log('已发送导入请求（' + prettyBytes(text.length) + '）');
@@ -195,16 +224,16 @@
   function oneClickImport() {
     var ta = document.getElementById('sgs-jc-text');
     var manual = (ta && ta.value || '').trim();
-    // 1) 用户已在文本框粘贴公告 —— 优先用他的
+    // 1) 用户已在文本框粘贴公告 —— 优先用他的（手动内容只警告不拦）
     if (manual.length >= 20) {
-      if (importToJingce(manual)) setStatus('✓ 已导入手动文本 · ' + prettyBytes(manual.length));
+      if (importToJingce(manual, false)) setStatus('✓ 已导入手动文本 · ' + prettyBytes(manual.length));
       return;
     }
-    // 2) 否则从抓包里自动挑最合适的
+    // 2) 否则从抓包里自动挑最合适的（严格体检）
     var it = pickBestCapture();
     if (!it) {
-      log('未抓到本期活动数据：请刷新官网活动页让数据加载，或展开「抓包详情」粘贴公告');
-      setStatus('未抓到活动数据 — 请刷新活动页或粘贴公告');
+      log('未抓到可用的公告数据：请打开官网【活动公告详情页】刷新，让页面加载公告正文');
+      setStatus('未抓到公告正文 — 请到公告详情页刷新抓取');
       openDetail(true);
       return;
     }
@@ -212,7 +241,7 @@
     if (ta) ta.value = text;
     selected = captured.indexOf(it);
     render();
-    if (importToJingce(text)) setStatus('✓ 已导入 #' + it.id + ' · ' + prettyBytes(it.size));
+    if (importToJingce(text, true)) setStatus('✓ 已导入 #' + it.id + ' · ' + prettyBytes(it.size));
   }
 
   window.addEventListener('message', function (e) {
@@ -318,9 +347,55 @@
     var b = document.createElement('button');
     b.id = LAUNCHER_ID;
     b.innerHTML = '<span style="font-size:16px">⚡</span><span>精测</span>';
-    b.title = '打开三国杀精测台';
-    b.onclick = function () { openPanel(); };
+    b.title = '点击打开精测台 · 可按住拖动';
+    var moved = false;
+    b.onclick = function () { if (!moved) openPanel(); moved = false; };
     (document.body || document.documentElement).appendChild(b);
+    makeLauncherDraggable(b, function (didMove) { moved = didMove; });
+  }
+
+  /* 浮窗拖动：按住移动到任意位置，松手后若发生过移动则抑制本次 click，
+     避免"拖一下却打开了面板"。位置存 localStorage，下次打开还在原处。 */
+  function makeLauncherDraggable(btn, onMove) {
+    var dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    try {
+      var saved = localStorage.getItem('sgs_jc_launcher_pos');
+      if (saved) {
+        var p = JSON.parse(saved);
+        if (typeof p.x === 'number' && typeof p.y === 'number') {
+          btn.style.left = p.x + 'px'; btn.style.top = p.y + 'px';
+          btn.style.right = 'auto'; btn.style.bottom = 'auto';
+        }
+      }
+    } catch (e) {}
+    btn.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      dragging = true; moved = false; sx = e.clientX; sy = e.clientY;
+      var r = btn.getBoundingClientRect();
+      ox = r.left; oy = r.top;
+      btn.style.left = ox + 'px'; btn.style.top = oy + 'px';
+      btn.style.right = 'auto'; btn.style.bottom = 'auto';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      var dx = e.clientX - sx, dy = e.clientY - sy;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      var nx = Math.max(0, Math.min(window.innerWidth - btn.offsetWidth, ox + dx));
+      var ny = Math.max(0, Math.min(window.innerHeight - btn.offsetHeight, oy + dy));
+      btn.style.left = nx + 'px'; btn.style.top = ny + 'px';
+    });
+    document.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      onMove && onMove(moved);
+      if (moved) {
+        try { localStorage.setItem('sgs_jc_launcher_pos', JSON.stringify({ x: btn.offsetLeft, y: btn.offsetTop })); } catch (e) {}
+        /* 拖动本身不会触发 click；若标志一直留着，用户下一次真实点击会被吞掉。
+           下一 tick 复位，既抑制拖动当次误触，又不影响之后的点击。 */
+        setTimeout(function () { onMove && onMove(false); }, 60);
+      }
+    });
   }
 
   function openPanel() {
