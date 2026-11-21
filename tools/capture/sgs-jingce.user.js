@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         三国杀精测 · 内嵌精测台（抓包+导入）
 // @namespace    https://github.com/Cloudyunpianer/sgs_jingce
-// @version      2.0.0
-// @description  在三国杀官网页面内嵌完整精测程序，hook 后台 JSON，一键导入数据并精测。配套 sgs_jingce。
+// @version      2.1.0
+// @description  在三国杀官网页面内嵌完整精测程序，hook 后台 JSON，一键导入本期活动并精测。配套 sgs_jingce。
 // @author       sgs_jingce
 // @match        *://x.sanguosha.com/*
 // @match        *://*.sanguosha.com/*
@@ -21,9 +21,10 @@
  *
  * 用法：
  *  - 安装 tools/capture/sgs-jingce.user.js 到 Tampermonkey / Violentmonkey。
- *  - 打开三国杀官网活动后台页面，右上角出现小窗：下半是完整精测程序，
- *    上半是抓包工具条。hook 到的 JSON 或手动粘贴的公告文本，点「导入到精测」
- *    即通过 postMessage 发给内嵌精测程序，自动解析并出结果。
+ *  - 打开三国杀官网活动后台页面，右下角出现「⚡ 精测」小浮窗，点它才打开
+ *    全屏精测台（不会自动弹出打扰浏览）。
+ *  - 进入后点顶部「⚡ 一键导入本期活动」：自动挑抓到的活动 JSON 转成公告
+ *    文本并导入，当场出结果。选将/计算仍在精测界面里手动操作。
  *  - 脚本不写磁盘、不连本地服务、不碰 git。
  * ============================================================================
  */
@@ -54,6 +55,7 @@
   var selected = -1;
   var seq = 0;
   var iframe = null;
+  var panelBuilt = false;
 
   function urlHit(url) {
     if (!CAPTURE.urlPatterns.length) return true;
@@ -87,10 +89,11 @@
       if (captured.length > CAPTURE.maxKeep) captured.length = CAPTURE.maxKeep;
       selected = 0;
       render();
-      /* 抓到新数据就自动把转换后的公告文本填进文本框，用户能立刻看到/改/导入 */
+      /* 抓到新数据就自动把转换后的公告文本填进文本框（若面板已建），用户能立刻看到/改 */
       var ta = document.getElementById('sgs-jc-text');
       if (ta) ta.value = toNoticeText(item);
       log('抓到 #' + item.id + ' ' + item.method + ' ' + prettyBytes(item.size));
+      setStatus('抓包 ' + captured.length + ' 条 · 最新 #' + item.id);
     } catch (e) { log('抓取处理异常：' + e.message); }
   }
 
@@ -165,18 +168,58 @@
     return jsonToText(item.payload);
   }
 
+  /* 从抓包里自动挑「最像本期活动公告」的一条：
+     URL 命中活动/公告类关键字加权，其次正文越长越可能是真公告。 */
+  function pickBestCapture() {
+    if (!captured.length) return null;
+    var best = null, bestScore = -1;
+    captured.forEach(function (it) {
+      var txt = '';
+      try { txt = toNoticeText(it) || ''; } catch (e) {}
+      var score = txt.length >= 100 ? txt.length : 0;
+      if (/activity|news|notice|event|gonggao|bulletin/i.test(it.url)) score += 1000000;
+      if (score > bestScore) { bestScore = score; best = it; }
+    });
+    return bestScore > 0 ? best : null;
+  }
+
   // --------------------------- 导入到精测 -----------------------------------
   function importToJingce(text) {
-    if (!text || !text.trim()) { log('没有可导入的文本'); return; }
-    if (!iframe || !iframe.contentWindow) { log('精测程序未就绪'); return; }
+    if (!text || !text.trim()) { log('没有可导入的文本'); return false; }
+    if (!iframe || !iframe.contentWindow) { log('精测程序未就绪'); return false; }
     iframe.contentWindow.postMessage({ __sgsCapture: 1, type: 'import', text: text }, '*');
     log('已发送导入请求（' + prettyBytes(text.length) + '）');
+    return true;
+  }
+
+  function oneClickImport() {
+    var ta = document.getElementById('sgs-jc-text');
+    var manual = (ta && ta.value || '').trim();
+    // 1) 用户已在文本框粘贴公告 —— 优先用他的
+    if (manual.length >= 20) {
+      if (importToJingce(manual)) setStatus('✓ 已导入手动文本 · ' + prettyBytes(manual.length));
+      return;
+    }
+    // 2) 否则从抓包里自动挑最合适的
+    var it = pickBestCapture();
+    if (!it) {
+      log('未抓到本期活动数据：请刷新官网活动页让数据加载，或展开「抓包详情」粘贴公告');
+      setStatus('未抓到活动数据 — 请刷新活动页或粘贴公告');
+      openDetail(true);
+      return;
+    }
+    var text = toNoticeText(it);
+    if (ta) ta.value = text;
+    selected = captured.indexOf(it);
+    render();
+    if (importToJingce(text)) setStatus('✓ 已导入 #' + it.id + ' · ' + prettyBytes(it.size));
   }
 
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (!d || d.__sgsCapture !== 1 || d.type !== 'importResult') return;
     log(d.ok ? '✓ 精测已导入并刷新' : ('✗ 精测导入失败：' + (d.error || '未知错误')));
+    setStatus(d.ok ? '✓ 本期活动已导入，开始精测吧' : ('✗ 导入失败：' + (d.error || '未知错误')));
   });
 
   // --------------------------- 导出 -----------------------------------------
@@ -196,9 +239,10 @@
     } catch (e) { log('✗ 下载失败：' + e.message); }
   }
 
-  // --------------------------- 小窗 UI --------------------------------------
-  var PANEL_ID = 'sgs-jingce-panel';
+  // --------------------------- 日志 / 状态 ----------------------------------
   var logs = [];
+  var LAUNCHER_ID = 'sgs-jc-launcher';
+  var PANEL_ID = 'sgs-jingce-panel';
   function log(msg) {
     var t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
     logs.unshift('[' + t + '] ' + msg);
@@ -206,30 +250,106 @@
     var box = document.getElementById('sgs-jc-logs');
     if (box) box.textContent = logs.join('\n');
   }
+  function setStatus(msg) {
+    var el = document.getElementById('sgs-jc-status');
+    if (el) el.textContent = msg;
+  }
 
+  // --------------------------- 样式 -----------------------------------------
   GM_addStyle([
-    '#' + PANEL_ID + '{position:fixed;top:40px;left:20px;width:1180px;height:800px;min-width:760px;min-height:520px;',
-    'z-index:2147483647;background:#1f2024;color:#e8e8ea;border:1px solid #3a3b40;border-radius:10px;',
-    'font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 10px 34px rgba(0,0,0,.5);',
-    'display:flex;flex-direction:column;overflow:hidden;resize:both;}',
+    /* 右下角启动浮窗：进页面只显示它，不打扰浏览 */
+    '#' + LAUNCHER_ID + '{position:fixed;right:24px;bottom:24px;z-index:2147483646;',
+    'background:linear-gradient(135deg,#5b7cfa,#8b5cf6);color:#fff;border:0;border-radius:999px;',
+    'padding:13px 22px;font:700 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
+    'cursor:pointer;box-shadow:0 8px 26px rgba(91,124,250,.5);transition:transform .15s,box-shadow .15s;',
+    'display:flex;align-items:center;gap:8px;user-select:none;}',
+    '#' + LAUNCHER_ID + ':hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(91,124,250,.62);}',
+
+    /* 全屏面板 */
+    '#' + PANEL_ID + '{position:fixed;inset:0;z-index:2147483647;background:#15161a;',
+    'display:flex;flex-direction:column;overflow:hidden;color:#e8e8ea;',
+    'font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}',
     '#' + PANEL_ID + ' *{box-sizing:border-box;}',
-    '#sgs-jc-head{padding:8px 12px;background:#2a2b31;cursor:move;user-select:none;display:flex;align-items:center;gap:8px;border-bottom:1px solid #3a3b40;flex:none;}',
-    '#sgs-jc-head b{font-weight:600;font-size:13px;flex:1;}',
-    '#sgs-jc-head .btn{background:#3a3b40;border:0;color:#e8e8ea;border-radius:5px;padding:2px 9px;cursor:pointer;font-size:12px;}',
-    '#sgs-jc-bar{padding:8px 10px;background:#24252a;border-bottom:1px solid #3a3b40;flex:none;}',
-    '#sgs-jc-bar .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;}',
-    '#sgs-jc-bar .btn{background:#3a5bd9;border:0;color:#fff;border-radius:5px;padding:4px 11px;cursor:pointer;font-size:12px;}',
-    '#sgs-jc-bar .btn.ghost{background:#3a3b40;}',
-    '#sgs-jc-bar .btn:disabled{background:#44454c;color:#888;cursor:default;}',
-    '#sgs-jc-list{display:flex;gap:5px;flex-wrap:wrap;max-height:56px;overflow:auto;margin-bottom:6px;}',
-    '.jc-item{padding:3px 8px;border:1px solid #44454c;border-radius:6px;cursor:pointer;font-size:11px;white-space:nowrap;}',
-    '.jc-item.sel{background:#2f3550;border-color:#6a78c8;}',
-    '#sgs-jc-text{width:100%;height:52px;background:#16171a;color:#b9d4b0;border:1px solid #3a3b40;border-radius:6px;padding:6px;font:11px/1.4 monospace;resize:vertical;}',
-    '#sgs-jc-logs{width:100%;height:34px;background:#16171a;color:#9a9ba0;border:1px solid #3a3b40;border-radius:6px;padding:4px 6px;font:11px/1.4 monospace;overflow:auto;white-space:pre-wrap;margin-top:6px;}',
+    '#' + PANEL_ID + '.hidden{display:none;}',
+
+    /* 顶栏 */
+    '#sgs-jc-head{height:54px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;',
+    'background:linear-gradient(90deg,#1c2130,#252a3c);border-bottom:1px solid #313747;}',
+    '#sgs-jc-head .brand{font-size:15px;font-weight:700;color:#eef0f5;flex:1;display:flex;align-items:center;gap:9px;}',
+    '#sgs-jc-head .brand .dot{width:9px;height:9px;border-radius:50%;background:#5b7cfa;box-shadow:0 0 10px #5b7cfa;}',
+    '#sgs-jc-head .status{color:#9aa0b4;font-size:12px;font-weight:400;margin-left:auto;}',
+    '#sgs-jc-head .btn{background:#313747;color:#c8ccd6;border:0;border-radius:7px;padding:7px 13px;cursor:pointer;font-size:12px;}',
+    '#sgs-jc-head .btn:hover{background:#3d4459;}',
+
+    /* 一键导入工具条 */
+    '#sgs-jc-toolbar{flex:none;padding:11px 20px;background:#1b1c21;border-bottom:1px solid #2b2c33;',
+    'display:flex;gap:14px;align-items:center;flex-wrap:wrap;}',
+    '#sgs-jc-oneclick{background:linear-gradient(135deg,#5b7cfa,#8b5cf6);color:#fff;border:0;border-radius:9px;',
+    'padding:11px 26px;font:700 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer;',
+    'box-shadow:0 4px 14px rgba(91,124,250,.35);transition:filter .15s,transform .1s;}',
+    '#sgs-jc-oneclick:hover{filter:brightness(1.12);}',
+    '#sgs-jc-oneclick:active{transform:scale(.98);}',
+    '#sgs-jc-toolbar .hint{color:#7d8290;font-size:12px;}',
+
+    /* 抓包详情（默认折叠） */
+    '#sgs-jc-detail{flex:none;padding:10px 20px;background:#17181c;border-bottom:1px solid #2b2c33;display:none;}',
+    '#sgs-jc-detail.on{display:block;}',
+    '#sgs-jc-detail .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}',
+    '#sgs-jc-detail .btn{background:#2e3038;color:#d5d8e0;border:1px solid #3c3e48;border-radius:7px;',
+    'padding:6px 12px;cursor:pointer;font-size:12px;}',
+    '#sgs-jc-detail .btn:hover{background:#3a3d47;}',
+    '#sgs-jc-list{display:flex;gap:6px;flex-wrap:wrap;max-height:34px;overflow:auto;flex:1;min-width:120px;}',
+    '.jc-item{padding:3px 9px;border:1px solid #3a3c46;border-radius:6px;cursor:pointer;font-size:11px;color:#aeb2bc;white-space:nowrap;}',
+    '.jc-item.sel{background:#2b3358;border-color:#6a7ce0;color:#fff;}',
+    '#sgs-jc-text{width:100%;height:58px;background:#101114;color:#b9d4b0;border:1px solid #3a3b40;',
+    'border-radius:6px;padding:7px;font:11px/1.45 monospace;resize:vertical;}',
+    '#sgs-jc-logs{width:100%;height:38px;background:#101114;color:#9a9ba0;border:1px solid #3a3b40;',
+    'border-radius:6px;padding:5px 7px;font:11px/1.4 monospace;overflow:auto;white-space:pre-wrap;margin-top:6px;}',
+
+    /* 精测 iframe 占满剩余 */
     '#sgs-jc-frame-wrap{flex:1;min-height:0;background:#fff;}',
-    '#sgs-jc-frame{width:100%;height:100%;border:0;}',
-    '#sgs-jc-panel.min #sgs-jc-bar,#sgs-jc-panel.min #sgs-jc-frame-wrap{display:none;}'
+    '#sgs-jc-frame{width:100%;height:100%;border:0;display:block;}'
   ].join(''));
+
+  // --------------------------- 启动浮窗 / 面板 -------------------------------
+  function buildLauncher() {
+    var old = document.getElementById(LAUNCHER_ID);
+    if (old) old.remove();
+    var b = document.createElement('button');
+    b.id = LAUNCHER_ID;
+    b.innerHTML = '<span style="font-size:16px">⚡</span><span>精测</span>';
+    b.title = '打开三国杀精测台';
+    b.onclick = function () { openPanel(); };
+    (document.body || document.documentElement).appendChild(b);
+  }
+
+  function openPanel() {
+    if (!panelBuilt) buildPanel();
+    var p = document.getElementById(PANEL_ID);
+    if (p) { p.classList.remove('hidden'); p.style.display = ''; }
+    var l = document.getElementById(LAUNCHER_ID);
+    if (l) l.style.display = 'none';
+    // 面板首次打开时，若之前已抓到数据，把最新一条填进文本框
+    var ta = document.getElementById('sgs-jc-text');
+    if (ta && !ta.value && captured.length) ta.value = toNoticeText(captured[0]);
+    setStatus(captured.length ? ('抓包 ' + captured.length + ' 条，点上方按钮一键导入') : '等待抓包或粘贴公告');
+  }
+
+  function closePanel() {
+    var p = document.getElementById(PANEL_ID);
+    if (p) p.classList.add('hidden');
+    var l = document.getElementById(LAUNCHER_ID);
+    if (l) l.style.display = '';
+  }
+
+  function openDetail(force) {
+    var d = document.getElementById('sgs-jc-detail');
+    if (!d) return;
+    if (force === true) d.classList.add('on');
+    else d.classList.toggle('on');
+    var btn = document.getElementById('sgs-jc-detail-btn');
+    if (btn) btn.textContent = d.classList.contains('on') ? '▴ 收起抓包详情' : '▾ 抓包详情';
+  }
 
   function buildPanel() {
     var old = document.getElementById(PANEL_ID);
@@ -238,37 +358,34 @@
     p.id = PANEL_ID;
     p.innerHTML =
       '<div id="sgs-jc-head">' +
-        '<b>三国杀精测 · 内嵌精测台</b>' +
-        '<button class="btn" id="sgs-jc-min">—</button>' +
-        '<button class="btn" id="sgs-jc-close">×</button>' +
+        '<div class="brand"><span class="dot"></span>三国杀精测 · 内嵌精测台</div>' +
+        '<span class="status" id="sgs-jc-status">就绪</span>' +
+        '<button class="btn" id="sgs-jc-detail-btn">▾ 抓包详情</button>' +
+        '<button class="btn" id="sgs-jc-close">✕ 关闭</button>' +
       '</div>' +
-      '<div id="sgs-jc-bar">' +
+      '<div id="sgs-jc-toolbar">' +
+        '<button id="sgs-jc-oneclick">⚡ 一键导入本期活动</button>' +
+        '<span class="hint">自动识别本期活动数据并导入，选将 / 计算在下方精测界面里完成</span>' +
+      '</div>' +
+      '<div id="sgs-jc-detail">' +
         '<div class="row">' +
-          '<button class="btn" id="sgs-jc-import">导入选中到精测</button>' +
-          '<button class="btn ghost" id="sgs-jc-importtext">导入下方文本</button>' +
-          '<button class="btn ghost" id="sgs-jc-copy">复制转换文本</button>' +
-          '<button class="btn ghost" id="sgs-jc-dl">下载选中JSON</button>' +
-          '<button class="btn ghost" id="sgs-jc-clear">清空抓包</button>' +
+          '<div id="sgs-jc-list"></div>' +
+          '<button class="btn" id="sgs-jc-importtext">导入下方文本</button>' +
+          '<button class="btn" id="sgs-jc-copy">复制文本</button>' +
+          '<button class="btn" id="sgs-jc-dl">下载JSON</button>' +
+          '<button class="btn" id="sgs-jc-clear">清空抓包</button>' +
         '</div>' +
-        '<div id="sgs-jc-list"></div>' +
         '<textarea id="sgs-jc-text" placeholder="抓到 JSON 后这里会填好转换后的公告文本，可直接改；也可手动粘贴公告 md 再点「导入下方文本」"></textarea>' +
         '<div id="sgs-jc-logs"></div>' +
       '</div>' +
       '<div id="sgs-jc-frame-wrap"><iframe id="sgs-jc-frame" sandbox="allow-scripts allow-same-origin"></iframe></div>';
     (document.body || document.documentElement).appendChild(p);
+    panelBuilt = true;
 
     iframe = document.getElementById('sgs-jc-frame');
-    // srcdoc 载入完整精测程序
     iframe.srcdoc = EMBEDDED_HTML;
 
-    document.getElementById('sgs-jc-import').onclick = function () {
-      var it = captured[selected];
-      if (!it) { log('没有选中的抓包数据'); return; }
-      var text = toNoticeText(it);
-      var ta = document.getElementById('sgs-jc-text');
-      if (ta) ta.value = text;
-      importToJingce(text);
-    };
+    document.getElementById('sgs-jc-oneclick').onclick = oneClickImport;
     document.getElementById('sgs-jc-importtext').onclick = function () {
       importToJingce(document.getElementById('sgs-jc-text').value);
     };
@@ -282,30 +399,13 @@
       else log('没有选中的抓包数据');
     };
     document.getElementById('sgs-jc-clear').onclick = function () {
-      captured = []; selected = -1; render(); log('已清空抓包');
+      captured = []; selected = -1; render(); setStatus('已清空抓包'); log('已清空抓包');
     };
-    document.getElementById('sgs-jc-min').onclick = function () { p.classList.toggle('min'); };
-    document.getElementById('sgs-jc-close').onclick = function () { p.style.display = 'none'; };
-    makeDraggable(p, document.getElementById('sgs-jc-head'));
+    document.getElementById('sgs-jc-detail-btn').onclick = function () { openDetail(); };
+    document.getElementById('sgs-jc-close').onclick = closePanel;
+
     render();
     log('就绪：精测程序已内嵌，等待抓包或手动粘贴公告');
-  }
-
-  function makeDraggable(panel, handle) {
-    var dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
-    handle.addEventListener('mousedown', function (e) {
-      if (e.target.tagName === 'BUTTON') return;
-      dragging = true; sx = e.clientX; sy = e.clientY;
-      ox = panel.offsetLeft; oy = panel.offsetTop;
-      panel.style.left = ox + 'px'; panel.style.top = oy + 'px';
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', function (e) {
-      if (!dragging) return;
-      panel.style.left = Math.max(0, ox + e.clientX - sx) + 'px';
-      panel.style.top = Math.max(0, oy + e.clientY - sy) + 'px';
-    });
-    document.addEventListener('mouseup', function () { dragging = false; });
   }
 
   function render() {
@@ -325,18 +425,13 @@
       };
       list.appendChild(d);
     });
-    var impBtn = document.getElementById('sgs-jc-import');
-    if (impBtn) impBtn.disabled = !captured.length;
   }
 
-  GM_registerMenuCommand('三国杀精测：显示内嵌精测台', function () {
-    var p = document.getElementById(PANEL_ID);
-    if (p) p.style.display = '';
-  });
+  GM_registerMenuCommand('三国杀精测：打开内嵌精测台', openPanel);
 
   function init() {
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', buildPanel);
-    else buildPanel();
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', buildLauncher);
+    else buildLauncher();
   }
   init();
 })();
