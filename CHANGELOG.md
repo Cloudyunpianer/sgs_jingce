@@ -10,7 +10,7 @@
 
 ### 新增
 
-- **后台数据自动抓取（油猴脚本 + 本地接收端）**：新增 `tools/capture/`，把「活动更新→抓后台 JSON→落盘→git 提交」做成全链路。`sgs-capture.user.js`（Tampermonkey）hook 页面 fetch/XHR，命中 `urlPatterns` 的 JSON 响应进悬浮小窗预览，点发送或开自动发送，用 `GM_xmlhttpRequest` POST 到本地（规避 https→http 混合内容拦截）。`server.js`（零依赖 Node，仅监听 127.0.0.1）做 token 鉴权（错 token 401）、SHA-256 内容去重、落盘 `samples/captured/*.json`（带 `_meta` 来源/时间/哈希）、自动 `git add + commit`（可配）。`start-server.bat` 一键启动；首次生成含随机 token 的 `config.json`（已 gitignore）。`CAPTURE.urlPatterns` 目前是**可配置占位**，待用户提供真实接口地址 + JSON 样例后替换。新增 `docs/capture.md` 说明安装/配置/接口改法/安全。模拟环境加载脚本验证 hook/小窗/自动发送无运行时异常；本地接收端 curl 联调通过鉴权、落盘、去重、commit 全链路，测试痕迹已清理。抓取原始数据与 config 均 gitignore，不进版本库。
+- **后台数据抓取油猴脚本**：新增 `tools/capture/sgs-capture.user.js`（Tampermonkey）。hook 页面 fetch / XHR，命中 `CAPTURE.urlPatterns` 的 JSON 响应进悬浮小窗：点一条预览，一键「复制选中」/「下载选中」，或「全部下载」打包成带 `_meta` 的 JSON。小窗可拖动 / 最小化 / 关闭，菜单命令可唤出。脚本只在浏览器里抓包与导出，**不写磁盘、不连本地服务、不碰 git**——需要版本管理的是脚本文件本身，抓取动作与 git 无关。`CAPTURE.urlPatterns` 目前是**可配置占位**，待用户提供真实接口地址 + JSON 样例后替换。新增 `docs/capture.md` 说明安装 / 导出 / 接口改法。模拟环境加载脚本验证 hook / 小窗 / 复制 / 下载无运行时异常。
 
 ---
 

@@ -16,7 +16,3 @@ dist/
 
 # 本地推送辅助脚本
 推送到GitHub.bat
-
-# 抓包接收端的本地配置（含 token，勿提交）与抓取产物
-tools/capture/config.json
-samples/captured/

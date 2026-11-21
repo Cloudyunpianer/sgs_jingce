@@ -186,7 +186,7 @@ js/
   parser.js         公告 md 解析
   ui.js             界面逻辑（原生 DOM，无框架）
 tools/check.js      node 自检
-tools/capture/      后台数据自动抓取（油猴脚本 + 本地接收端，见 docs/capture.md）
+tools/capture/      后台数据抓取油猴脚本（随仓库版本管理，见 docs/capture.md）
 启动精测.bat        Windows 双击启动
 结论-v4.md          本期跑出来的结论表（样例）
 PLAN-v4.md          这一版的设计稿
@@ -200,7 +200,7 @@ docs/               文档
 - [使用指南](docs/usage.md) —— 每个界面、每个弹窗怎么用
 - [口径与算法](docs/methodology.md) —— 每个数字是怎么算出来的
 - [数据维护 / 换期](docs/data.md) —— 哪些要手改，导入怎么工作
-- [后台数据自动抓取](docs/capture.md) —— 油猴脚本抓 JSON + 本地接收端落盘 + git 自动提交
+- [后台数据抓取](docs/capture.md) —— 油猴脚本抓活动 JSON、小窗预览、复制/下载导出
 - [代码结构](docs/architecture.md) —— 想改代码看这个
 - [常见问题](docs/faq.md) —— 为什么和我算的不一样
 
