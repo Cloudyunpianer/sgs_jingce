@@ -233,8 +233,12 @@ window.PARSER = (function () {
     const ls = normalizeTabTables(lines(text));
     const rep = [];
     const miss = [];
+    /* 本期是否真有「15选1 / 自选武将」玩法。小雪期只有 2选1/4选1/6选1 自选福袋，
+       没有 15选1；但福袋折出的「定向招募令」会被倍率表归进 sel15 列，导致
+       「没有 15选1 却显示 15-1 数据」。这里按公告原文记录信号，供 UI 隐藏三列。 */
+    const hasSel15 = /15\s*选\s*1|15\s*[-－]\s*1|十五选一/.test(text);
     const model = {
-      meta: {}, systems: [], shops: {},
+      meta: { hasSel15 }, systems: [], shops: {},
       coupons: {}, chargeTiers: [], cumCharge: [], dailyTiers: [], cumSpend: [],
       dailyCumCharge: [],
       /* 消费送宝玉：累计消费到门槛送传世宝玉（3万/6万/10万/20万 → 3/3/4/10 玉）。
@@ -914,6 +918,7 @@ window.PARSER = (function () {
       if (model.meta.title) P.meta.title = model.meta.title;
       if (model.meta.start) P.meta.start = model.meta.start;
       if (model.meta.end) P.meta.end = model.meta.end;
+      if (model.meta.hasSel15 !== undefined) P.meta.hasSel15 = !!model.meta.hasSel15;
       if (P.meta.start && P.meta.end) {
         const d = (new Date(P.meta.end) - new Date(P.meta.start)) / 86400000;
         if (d >= 0) P.meta.days = Math.round(d) + 1;

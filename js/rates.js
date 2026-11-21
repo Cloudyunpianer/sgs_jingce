@@ -70,6 +70,10 @@ window.RATES = (function () {
        定向武将无统一标价，按纳贤令标准价估，且只在 sel15 列计入（可选，不算进「不拿纳贤」）。 */
     out['定向招募令'] = 1000;
     out['定向武将'] = out['纳贤令'] || 1000;
+    /* 宝玉碎片：按 params.shardPerJade（默认 5:1）折成传世宝玉，再乘宝玉保底价。
+       消费送宝玉这类档位给的常是碎片，没有单价就无法折算成等价元宝。 */
+    const perJade = P.params && P.params.shardPerJade > 0 ? P.params.shardPerJade : 5;
+    out['宝玉碎片'] = (out['传世宝玉'] || (P.singles && P.singles['传世宝玉'] && P.singles['传世宝玉'].price) || 10000) / perJade;
     _unit = out;
     return out;
   }
@@ -156,12 +160,26 @@ window.RATES = (function () {
     return res;
   }
 
+  /* onlyDay 是「仅限某月某日」的绝对日期（如 21 / 22），不是相对第几天。
+     活动首日 = P.meta.start 的日号；只有它才叫「首日」，其余显示具体 M/D，
+     否则同一期两个 ¥12 档（11/21 与 11/22）都会被误标成「首」。 */
+  function startDayNum() {
+    const m = /-(\d{2})$/.exec((P.meta && P.meta.start) || '');
+    return m ? +m[1] : 0;
+  }
+  function dayLabel(onlyDay) {
+    if (!onlyDay) return '';
+    if (onlyDay === startDayNum()) return '首日';
+    const mm = /^(\d{4})-(\d{2})-/.exec((P.meta && P.meta.start) || '');
+    return mm ? `${+mm[2]}/${onlyDay}` : `第${onlyDay}日`;
+  }
+
   function condText(t, days) {
     const p = [];
     if (t.perDay) p.push(`每日 ${t.perDay} 次（${days} 天共 ${t.perDay * days} 次）`);
-    else if (t.onlyDay) p.push('仅首日 1 次');
-    else if (t.fromDay) p.push('11/8 起 1 次');
-    if (t.total != null && !t.fromDay) p.push(t.alt ? `整期 ${t.total} 次（11/8 重置）` : `整期 ${t.total} 次`);
+    else if (t.onlyDay) p.push(`仅 ${dayLabel(t.onlyDay)} 1 次`);
+    else if (t.fromDay) p.push(`${dayLabel(t.fromDay)} 起 1 次`);
+    if (t.total != null && !t.fromDay) p.push(t.alt ? `整期 ${t.total} 次（${dayLabel(startDayNum() + 1)} 重置）` : `整期 ${t.total} 次`);
     if (t.alt) p.push('双倍箱二选一');
     return p.join(' · ') || '整期 1 次';
   }
@@ -192,8 +210,8 @@ window.RATES = (function () {
       const pickR = bestRoute === 'B' ? routeB : routeA;
       const altBetter = bestRoute === 'B';
 
-      const tag = t.onlyDay ? '首日'
-        : t.fromDay ? (t.fromDay === 2 ? '11/8起' : `第${t.fromDay}天起`)
+      const tag = t.onlyDay ? dayLabel(t.onlyDay)
+        : t.fromDay ? (dayLabel(t.fromDay) + '起')
         : t.perDay ? '每日'
         : t.total != null ? `共${t.total}次` : '1次';
 
@@ -217,7 +235,7 @@ window.RATES = (function () {
         onceVal,
         total: pickR.total + onceVal,
         ratio: t.need > 0 ? (pickR.total + onceVal) / t.need : 0,
-        tag,
+        tag, onlyDay: t.onlyDay || 0, fromDay: t.fromDay || 0,
         altBind, altYb: routeB ? routeB.yb : 0,
         /* capYb = 这个档位最多能拿到多少「可花元宝」——双倍箱选绑元时是 2 倍本金。
            凑额 DP 要用它，否则「要花 40 万元宝」会被判成买不到。 */
@@ -365,7 +383,7 @@ window.RATES = (function () {
     if (/15\s*[-选一]|十五选一|自选武将|武将自选|自选礼|选一/.test(k)) return 'sel15';
     if (/^定向招募令$|^定向武将$/.test(k)) return 'sel15';
     if (/纳贤|^令$/.test(k)) return 'naxian';
-    if (/灯|玉|球/.test(k)) return 'lamp';
+    if (/灯|玉|球|碎片|盒/.test(k)) return 'lamp';
     return 'other';
   }
 
@@ -373,9 +391,13 @@ window.RATES = (function () {
     const U = unitTable();
     const b = { tong: 0, bang: 0, hongbao: 0, coupon: 0, lamp: 0, naxian: 0, sel15: 0, other: 0 };
     const detail = {};
+    const hasSel15 = !!(P.meta && P.meta.hasSel15);
     const put = (k, q) => {
       if (!q) return;
-      const col = colOf(k);
+      let col = colOf(k);
+      /* 本期无「15选1」时，自选福袋折出的「定向招募令/定向武将」不该并显示成
+         15-1 列，归并到「其他」。金额总值不变，只是归类口径跟随本期玩法。 */
+      if (!hasSel15 && col === 'sel15') col = 'other';
       const val = q * (U[k] || 0);
       b[col] += val;
       (detail[col] = detail[col] || []).push({ k, q, val });
@@ -632,9 +654,9 @@ window.RATES = (function () {
   function notes() {
     const U = unitTable();
     const fmt = (k) => (U[k] ? `${k} ${Math.round(U[k])}` : null);
-    const line = ['盒', '祈福灯', '纳贤令', '锦绣', '狂欢夺宝券', '狂欢水晶球'].map(fmt).filter(Boolean);
+    const line = ['盒', '祈福灯', '纳贤令', '锦绣', '狂欢夺宝券', '狂欢水晶球', '传世宝玉', '宝玉碎片'].map(fmt).filter(Boolean);
     return [
-      `道具折算单价取「当期商城最低可得价」：${line.join('、')}。与方案里实际买入价同源，不是单买标价。`
+      `副产物按等价元宝折算：${line.join('、')}。祈福灯/宝玉盒/纳贤令等既能减少购买需求、也在这张表里折成元宝价值——两者是同一笔产出的两种视角，不重复叠加。`
         + '（纳贤令例外：每日前两次 200 / 500 是限购特惠，按「纳贤令礼包」标准标价折。）',
       Object.keys(P.redPackets || {}).length
         ? Object.keys(P.redPackets).map((k) => {

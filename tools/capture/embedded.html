@@ -487,6 +487,14 @@ button{font-family:inherit}
 .ana-table tbody tr:hover td{background:#fafbfc}
 .ana-table .pickbtn{white-space:nowrap;padding:2px 8px}
 .modal-body .tagline{margin-left:5px;vertical-align:1px}
+.modal-body .tagline.locked{background:#eef4fb;color:#2f6f9e;border-color:#cfe0f0}
+.ana-table tbody tr.row-locked td{background:#f4f9ff}
+.ana-table tbody tr.row-locked td.planname{box-shadow:inset 3px 0 0 #2f6f9e}
+.ana-table tbody tr.fold-row{display:none}
+.ana-table tbody tr.fold-row.visible{display:table-row}
+.plans-toggle{margin:2px 0 10px;text-align:center;font-size:11.5px;color:#2f6f9e;cursor:pointer;padding:5px;border:1px dashed #cfe0f0;border-radius:5px;background:#f7fbff;user-select:none}
+.plans-toggle:hover{background:#eef5fd}
+.plans-toggle.open{border-style:solid}
 
 .tier-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .tchip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line-strong);border-radius:8px;
@@ -4049,6 +4057,10 @@ window.RATES = (function () {
        定向武将无统一标价，按纳贤令标准价估，且只在 sel15 列计入（可选，不算进「不拿纳贤」）。 */
     out['定向招募令'] = 1000;
     out['定向武将'] = out['纳贤令'] || 1000;
+    /* 宝玉碎片：按 params.shardPerJade（默认 5:1）折成传世宝玉，再乘宝玉保底价。
+       消费送宝玉这类档位给的常是碎片，没有单价就无法折算成等价元宝。 */
+    const perJade = P.params && P.params.shardPerJade > 0 ? P.params.shardPerJade : 5;
+    out['宝玉碎片'] = (out['传世宝玉'] || (P.singles && P.singles['传世宝玉'] && P.singles['传世宝玉'].price) || 10000) / perJade;
     _unit = out;
     return out;
   }
@@ -4135,12 +4147,26 @@ window.RATES = (function () {
     return res;
   }
 
+  /* onlyDay 是「仅限某月某日」的绝对日期（如 21 / 22），不是相对第几天。
+     活动首日 = P.meta.start 的日号；只有它才叫「首日」，其余显示具体 M/D，
+     否则同一期两个 ¥12 档（11/21 与 11/22）都会被误标成「首」。 */
+  function startDayNum() {
+    const m = /-(\d{2})$/.exec((P.meta && P.meta.start) || '');
+    return m ? +m[1] : 0;
+  }
+  function dayLabel(onlyDay) {
+    if (!onlyDay) return '';
+    if (onlyDay === startDayNum()) return '首日';
+    const mm = /^(\d{4})-(\d{2})-/.exec((P.meta && P.meta.start) || '');
+    return mm ? `${+mm[2]}/${onlyDay}` : `第${onlyDay}日`;
+  }
+
   function condText(t, days) {
     const p = [];
     if (t.perDay) p.push(`每日 ${t.perDay} 次（${days} 天共 ${t.perDay * days} 次）`);
-    else if (t.onlyDay) p.push('仅首日 1 次');
-    else if (t.fromDay) p.push('11/8 起 1 次');
-    if (t.total != null && !t.fromDay) p.push(t.alt ? `整期 ${t.total} 次（11/8 重置）` : `整期 ${t.total} 次`);
+    else if (t.onlyDay) p.push(`仅 ${dayLabel(t.onlyDay)} 1 次`);
+    else if (t.fromDay) p.push(`${dayLabel(t.fromDay)} 起 1 次`);
+    if (t.total != null && !t.fromDay) p.push(t.alt ? `整期 ${t.total} 次（${dayLabel(startDayNum() + 1)} 重置）` : `整期 ${t.total} 次`);
     if (t.alt) p.push('双倍箱二选一');
     return p.join(' · ') || '整期 1 次';
   }
@@ -4171,8 +4197,8 @@ window.RATES = (function () {
       const pickR = bestRoute === 'B' ? routeB : routeA;
       const altBetter = bestRoute === 'B';
 
-      const tag = t.onlyDay ? '首日'
-        : t.fromDay ? (t.fromDay === 2 ? '11/8起' : `第${t.fromDay}天起`)
+      const tag = t.onlyDay ? dayLabel(t.onlyDay)
+        : t.fromDay ? (dayLabel(t.fromDay) + '起')
         : t.perDay ? '每日'
         : t.total != null ? `共${t.total}次` : '1次';
 
@@ -4196,7 +4222,7 @@ window.RATES = (function () {
         onceVal,
         total: pickR.total + onceVal,
         ratio: t.need > 0 ? (pickR.total + onceVal) / t.need : 0,
-        tag,
+        tag, onlyDay: t.onlyDay || 0, fromDay: t.fromDay || 0,
         altBind, altYb: routeB ? routeB.yb : 0,
         /* capYb = 这个档位最多能拿到多少「可花元宝」——双倍箱选绑元时是 2 倍本金。
            凑额 DP 要用它，否则「要花 40 万元宝」会被判成买不到。 */
@@ -4344,7 +4370,7 @@ window.RATES = (function () {
     if (/15\s*[-选一]|十五选一|自选武将|武将自选|自选礼|选一/.test(k)) return 'sel15';
     if (/^定向招募令$|^定向武将$/.test(k)) return 'sel15';
     if (/纳贤|^令$/.test(k)) return 'naxian';
-    if (/灯|玉|球/.test(k)) return 'lamp';
+    if (/灯|玉|球|碎片|盒/.test(k)) return 'lamp';
     return 'other';
   }
 
@@ -4352,9 +4378,13 @@ window.RATES = (function () {
     const U = unitTable();
     const b = { tong: 0, bang: 0, hongbao: 0, coupon: 0, lamp: 0, naxian: 0, sel15: 0, other: 0 };
     const detail = {};
+    const hasSel15 = !!(P.meta && P.meta.hasSel15);
     const put = (k, q) => {
       if (!q) return;
-      const col = colOf(k);
+      let col = colOf(k);
+      /* 本期无「15选1」时，自选福袋折出的「定向招募令/定向武将」不该并显示成
+         15-1 列，归并到「其他」。金额总值不变，只是归类口径跟随本期玩法。 */
+      if (!hasSel15 && col === 'sel15') col = 'other';
       const val = q * (U[k] || 0);
       b[col] += val;
       (detail[col] = detail[col] || []).push({ k, q, val });
@@ -4611,9 +4641,9 @@ window.RATES = (function () {
   function notes() {
     const U = unitTable();
     const fmt = (k) => (U[k] ? `${k} ${Math.round(U[k])}` : null);
-    const line = ['盒', '祈福灯', '纳贤令', '锦绣', '狂欢夺宝券', '狂欢水晶球'].map(fmt).filter(Boolean);
+    const line = ['盒', '祈福灯', '纳贤令', '锦绣', '狂欢夺宝券', '狂欢水晶球', '传世宝玉', '宝玉碎片'].map(fmt).filter(Boolean);
     return [
-      `道具折算单价取「当期商城最低可得价」：${line.join('、')}。与方案里实际买入价同源，不是单买标价。`
+      `副产物按等价元宝折算：${line.join('、')}。祈福灯/宝玉盒/纳贤令等既能减少购买需求、也在这张表里折成元宝价值——两者是同一笔产出的两种视角，不重复叠加。`
         + '（纳贤令例外：每日前两次 200 / 500 是限购特惠，按「纳贤令礼包」标准标价折。）',
       Object.keys(P.redPackets || {}).length
         ? Object.keys(P.redPackets).map((k) => {
@@ -5045,8 +5075,12 @@ window.PARSER = (function () {
     const ls = normalizeTabTables(lines(text));
     const rep = [];
     const miss = [];
+    /* 本期是否真有「15选1 / 自选武将」玩法。小雪期只有 2选1/4选1/6选1 自选福袋，
+       没有 15选1；但福袋折出的「定向招募令」会被倍率表归进 sel15 列，导致
+       「没有 15选1 却显示 15-1 数据」。这里按公告原文记录信号，供 UI 隐藏三列。 */
+    const hasSel15 = /15\s*选\s*1|15\s*[-－]\s*1|十五选一/.test(text);
     const model = {
-      meta: {}, systems: [], shops: {},
+      meta: { hasSel15 }, systems: [], shops: {},
       coupons: {}, chargeTiers: [], cumCharge: [], dailyTiers: [], cumSpend: [],
       dailyCumCharge: [],
       /* 消费送宝玉：累计消费到门槛送传世宝玉（3万/6万/10万/20万 → 3/3/4/10 玉）。
@@ -5726,6 +5760,7 @@ window.PARSER = (function () {
       if (model.meta.title) P.meta.title = model.meta.title;
       if (model.meta.start) P.meta.start = model.meta.start;
       if (model.meta.end) P.meta.end = model.meta.end;
+      if (model.meta.hasSel15 !== undefined) P.meta.hasSel15 = !!model.meta.hasSel15;
       if (P.meta.start && P.meta.end) {
         const d = (new Date(P.meta.end) - new Date(P.meta.start)) / 86400000;
         if (d >= 0) P.meta.days = Math.round(d) + 1;
@@ -6369,13 +6404,15 @@ window.PARSER = (function () {
       warns.push(`还差：${short.map((x) => `${x.label} ${E.fmt(Math.round(x.lack))}`).join('、')}
         <span>${state.lockCharge ? '这组充值给的不够，加档位或去掉目标' : '当前渠道凑不齐，考虑换路线或加预算'}</span>`);
     }
-    /* 充值被锁定：说明钱是按你选的那组充的，以及够不够花 */
+    /* 充值被锁定：钱按你选的那组充。若不够，缺的部分是「需要预备的存货」，
+       不是让你再加充值档——工具的定位是「最少花费拿目标」，充值组合已定，
+       差额就是你手上要有的元宝（期初存货），填到左栏即可。 */
     let lockHtml = '';
     if (state.lockCharge && state.lockCharge.length) {
       const over = r.overBudget || 0;
       lockHtml = `<div class="lockbar${over > 1 ? ' bad' : ''}">
         <span>${over > 1
-          ? `充值已锁定，但还差 <b>${E.fmt(Math.round(over))}</b> 元宝才够买这些——再加一档，或去掉一个目标`
+          ? `这组充值到账 ${E.fmt(Math.round(r.charge.spendableYb || r.charge.yb))} 元宝，还差 <b>${E.fmt(Math.round(over))}</b> 元宝——在左栏「期初存货·元宝」填入这笔即可，不用再加充值档`
           : `充值已锁定为这一组，${arrivalText(r.charge)}，可花余额够花`}</span>
         <button class="btn sm ghost" id="unlockCharge">解除锁定</button>
       </div>`;
@@ -6737,7 +6774,16 @@ window.PARSER = (function () {
   function planLabel(picks) {
     return picks.map((p) => {
       const t = p.tier;
-      const suf = t.tag === '首日' ? '·首' : (/11\/8|第\d天起/.test(t.tag) ? '·后' : '');
+      /* 限定日期档：首日标「·首」，其它限定日标「·M/D」，
+         避免两笔 ¥12（11/21 与 11/22）都叫「¥12首」。 */
+      let suf = '';
+      const day = t.onlyDay || t.fromDay;
+      if (day) {
+        const start = /-(\d{2})$/.exec((P.meta && P.meta.start) || '');
+        const isFirst = start && day === +start[1];
+        const mm = /^\d{4}-(\d{2})-/.exec((P.meta && P.meta.start) || '');
+        suf = isFirst ? '·首' : (mm ? `·${+mm[1]}/${day}` : `·第${day}日`);
+      }
       return `¥${E.fmt(t.rmb)}${suf}${p.n > 1 ? '×' + p.n : ''}`;
     }).join(' + ');
   }
@@ -6767,18 +6813,34 @@ window.PARSER = (function () {
     }, 0));
 
     let pool = [];
-    try { pool = RATES.bestMix(days, maxBudget, 260, { minShare: 0 }); } catch (e) { pool = []; }
-    [100, 300, 600, 1000, 2000, 4000].forEach((b) => {
-      if (b > maxBudget) return;
+    try { pool = RATES.bestMix(days, maxBudget, 400, { minShare: 0 }); } catch (e) { pool = []; }
+    /* 更密的预算档 + 每档取头部若干组，方案不再只有「6 个固定代表」。
+       档位随本期最大预算自适应生成，换期不会总是同样几个方案。 */
+    const budgetSteps = [30, 60, 100, 150, 200, 300, 450, 600, 900, 1200, 1800, 2600, 4000, 6000];
+    budgetSteps.filter((b) => b <= maxBudget * 1.02).forEach((b) => {
       const cand = pool
-        .filter((x) => x.combo.money <= b * 1.02 && x.combo.money >= b * 0.7)
-        .sort((x, y) => y.e2e.ratio - x.e2e.ratio)[0];
-      if (cand) add('推荐', cand.combo.picks.map((p) => ({ i: p.tier.i, n: p.n })));
+        .filter((x) => x.combo.money <= b * 1.05 && x.combo.money >= b * 0.8)
+        .sort((x, y) => y.e2e.ratio - x.e2e.ratio)
+        .slice(0, 3);
+      cand.forEach((x) => add('推荐', x.combo.picks.map((p) => ({ i: p.tier.i, n: p.n }))));
+    });
+    /* 副产物导向：每个产出副产物的档位单独做「买满这个档」的候选，
+       让「我要纳贤令/宝玉/券」时能直接看到哪种充值档产得多、倍率高。 */
+    RATES.tierList(days).filter((t) => t.cap > 0).forEach((t) => {
+      const src = P.chargeTiers[t.i] || {};
+      const kinds = Object.keys(src.gives || {}).filter((k) => !/绑定元宝|红包/.test(k));
+      if (kinds.length) {
+        const n = Math.min(t.cap, 3);
+        add('产' + kinds.slice(0, 1)[0].replace(/^定向/, ''), [{ i: t.i, n }]);
+      }
     });
     const full = RATES.fullMix(days);
     add('全买满', full.combo.picks.map((p) => ({ i: p.tier.i, n: p.n })));
     RATES.tierList(days).forEach((t) => { if (t.cap > 0) add('单档', [{ i: t.i, n: 1 }]); });
 
+    /* 全部候选按「不拿纳贤」倍率从高到低排序，UI 取前 8 展示、其余折叠。
+       排序在这里做一次，renderRates 直接用。 */
+    out.sort((a, b) => b.bd.ratioNoNaxian - a.bd.ratioNoNaxian);
     planCache = { days, list: out };
     return out;
   }
@@ -6792,28 +6854,64 @@ window.PARSER = (function () {
     state.rateView = 'table';
     state.comboSel = state.comboSel || {};
     const days = state.ctx.days;
-    const plans = getPlans(days);
+    const plans = getPlans(days).slice();
+    /* 当前锁定的充值组合也放进表里，避免「每日方案要充值¥286，但分析表里
+       找不到这一组」的错位。已在列表里的不重复加，只是把它挪到最前并高亮。 */
+    if (state.lockCharge && state.lockCharge.length) {
+      const lockPicks = state.lockCharge.map((x) => ({ i: x.i, n: x.n }));
+      const sig = lockPicks.map((p) => p.i + 'x' + p.n).sort().join('+');
+      const exist = plans.findIndex((p) => p.picks.map((x) => x.i + 'x' + x.n).sort().join('+') === sig);
+      const c = RATES.combo(lockPicks, days);
+      if (c.cost) {
+        const entry = {
+          tag: '已锁定', c, bd: RATES.breakdown(c, days),
+          label: planLabel(c.picks), picks: c.picks.map((p) => ({ i: p.tier.i, n: p.n })),
+        };
+        if (exist >= 0) plans[exist] = entry; else plans.unshift(entry);
+      }
+    }
     const full = RATES.fullMix(days);
-    const bestOne = plans.slice().sort((a, b) => b.bd.ratioAll - a.bd.ratioAll)[0];
+    const bestOne = plans.slice().sort((a, b) => b.bd.ratioNoNaxian - a.bd.ratioNoNaxian)[0];
 
-    const head = RATES.COLS.map((c) => `<th class="num" title="${c.hint}">${c.name}</th>`).join('');
+    /* 本期无「15选1」玩法时，sel15 列可能是自选福袋折出的「定向招募令」，
+       显示出来用户看不懂（明明没 15选1 却有 15-1 数据）。隐藏该列及两档相关倍率。 */
+    const hasSel15 = !!P.meta.hasSel15;
+    const cols = RATES.COLS.filter((c) => hasSel15 || c.key !== 'sel15');
+
+    const head = cols.map((c) => `<th class="num" title="${c.hint}">${c.name}</th>`).join('');
+
+    /* 按倍率排序后取前 8 展示，其余折叠（DOM 保留，索引与 plans 对齐，
+       保证「选将→」按钮 data-i 不错位）。锁定行始终在前、不受折叠影响。 */
+    const LOCK_FIRST = 8;
+    const lockedIdx = plans.findIndex((p) => p.tag === '已锁定');
+    const shown = new Set();
+    if (lockedIdx >= 0) shown.add(lockedIdx);
+    plans.slice().sort((a, b) => b.bd.ratioNoNaxian - a.bd.ratioNoNaxian)
+      .forEach((p) => {
+        const idx = plans.indexOf(p);
+        if (shown.size < LOCK_FIRST + (lockedIdx >= 0 ? 1 : 0)) shown.add(idx);
+      });
 
     const rows = plans.map((p, i) => {
       const bd = p.bd;
       const ybTotal = bdYbTotal(bd);
       const e2e = RATES.endToEnd(p.c, days);
-      const cells = RATES.COLS.map((c) => {
+      const cells = cols.map((c) => {
         const v = bd.b[c.key];
         return `<td class="num${v > 0 ? '' : ' zero'}">${v > 0 ? E.fmt(Math.round(v)) : '—'}</td>`;
       }).join('');
-      return `<tr>
-        <td class="planname">${p.label}<span class="tagline ${p.tag === '推荐' ? '' : 'gold'}">${p.tag}</span></td>
+      const ratioCols = hasSel15
+        ? `<td class="num ratio">${bd.ratioAll.toFixed(2)}×</td>
+           <td class="num ratio sub2">${bd.ratioNo15.toFixed(2)}×</td>
+           <td class="num ratio sub2">${bd.ratioNoNaxian.toFixed(2)}×</td>`
+        : `<td class="num ratio">${bd.ratioNoNaxian.toFixed(2)}×</td>`;
+      const rowCls = [p.tag === '已锁定' ? 'row-locked' : '', shown.has(i) ? '' : 'fold-row'].filter(Boolean).join(' ');
+      return `<tr${rowCls ? ' class="' + rowCls + '"' : ''}>
+        <td class="planname">${p.label}<span class="tagline ${p.tag === '推荐' ? '' : p.tag === '已锁定' ? 'locked' : 'gold'}">${p.tag}</span></td>
         <td class="num"><b>¥${E.fmt(p.c.money)}</b></td>
         <td class="num"><b>${E.fmt(Math.round(ybTotal))}</b></td>
         ${cells}
-        <td class="num ratio">${bd.ratioAll.toFixed(2)}×</td>
-        <td class="num ratio sub2">${bd.ratioNo15.toFixed(2)}×</td>
-        <td class="num ratio sub2">${bd.ratioNoNaxian.toFixed(2)}×</td>
+        ${ratioCols}
         <td class="num e2e" title="充值返利 + 消费返利都算上">${e2e.ratio.toFixed(2)}×</td>
         <td class="num"><button class="btn sm ghost pickbtn" data-i="${i}">选将 →</button></td>
       </tr>`;
@@ -6834,13 +6932,15 @@ window.PARSER = (function () {
     /* 本期充值到底返不返「15-1 / 纳贤令」——不返的话三档倍率必然一样，
        与其让用户以为是 bug，不如直接说明白 */
     const noSpecial = plans.every((p) => p.bd.b.sel15 === 0 && p.bd.b.naxian === 0);
-    const hintText = noSpecial
-      ? '本期充值不返 15-1 / 纳贤令，三档倍率一致；换个有纳贤返利的期就会分开'
-      : '倍率高 ≠ 一定值：要看这些产出对不对得上你要的武将';
+    const hintText = !hasSel15
+      ? '本期没有「15选1」玩法，已隐藏相关列；倍率只按「不拿纳贤」与「含消费」两档看'
+      : noSpecial
+        ? '本期充值不返 15-1 / 纳贤令，三档倍率一致；换个有纳贤返利的期就会分开'
+        : '倍率高 ≠ 一定值：要看这些产出对不对得上你要的武将';
 
     $('#rateBody').innerHTML = `
       <div class="rate-kpis">
-        <div class="kpi"><span>最优单档</span><b>${bestOne ? `¥${E.fmt(bestOne.c.money)} · ${bestOne.bd.ratioAll.toFixed(2)}×` : '—'}</b></div>
+        <div class="kpi"><span>最优单档</span><b>${bestOne ? `¥${E.fmt(bestOne.c.money)} · ${(hasSel15 ? bestOne.bd.ratioAll : bestOne.bd.ratioNoNaxian).toFixed(2)}×` : '—'}</b></div>
         <div class="kpi"><span>全买满</span><b>¥${E.fmt(full.combo.money)} · ${full.e2e.ratio.toFixed(2)}×</b></div>
         <div class="kpi"><span>方案</span><b>${plans.length} 组</b></div>
         <div class="kpi hint">${hintText}</div>
@@ -6851,8 +6951,8 @@ window.PARSER = (function () {
           <tr>
             <th>充值方案</th><th class="num">金额</th><th class="num" title="能直接花的元宝">总元宝</th>
             ${head}
-            <th class="num" title="产出全部算数">拿15-1</th>
-            <th class="num" title="目标不在 15 选 1 名单里">拿非15-1</th>
+            ${hasSel15 ? `<th class="num" title="产出全部算数">拿15-1</th>
+            <th class="num" title="目标不在 15 选 1 名单里">拿非15-1</th>` : ''}
             <th class="num" title="根本不练纳贤将">不拿纳贤</th>
             <th class="num" title="充值返利 + 消费返利都算上">含消费</th>
             <th></th>
@@ -6860,9 +6960,12 @@ window.PARSER = (function () {
         </thead>
         <tbody>${rows}</tbody>
       </table>
+      ${plans.length > LOCK_FIRST ? `<div class="plans-toggle" id="plansToggle">▾ 展开其余 ${plans.length - shown.size} 组方案（按倍率从高到低）</div>` : ''}
       <div class="rate-foot">
         ${RATES.notes().map((n) => `<div>· ${n}</div>`).join('')}
-        <div>· 三档倍率只差在「产出算不算数」：<b>拿 15-1</b> 全算；<b>拿非 15-1</b> 扣掉 15-1 类产出；<b>不拿纳贤</b> 连纳贤令也不算。</div>
+        ${hasSel15
+          ? '<div>· 三档倍率只差在「产出算不算数」：<b>拿 15-1</b> 全算；<b>拿非 15-1</b> 扣掉 15-1 类产出；<b>不拿纳贤</b> 连纳贤令也不算。</div>'
+          : '<div>· 本期无「15选1」玩法：<b>不拿纳贤</b>=产出不算纳贤令的保守倍率，<b>含消费</b>额外算上每日消费返利。自选福袋折出的定向产出已计入「其他」列。</div>'}
       </div>
 
       <div class="rate-sec">
@@ -6914,6 +7017,16 @@ window.PARSER = (function () {
     $('#rateBody').querySelectorAll('.pickbtn').forEach((el) => {
       el.onclick = () => openPicker(plans[+el.dataset.i]);
     });
+    const toggle = $('#plansToggle');
+    if (toggle) toggle.onclick = () => {
+      const body = toggle.closest('.rate-sec').querySelector('.ana-table tbody');
+      const folded = body.querySelectorAll('tr.fold-row');
+      const opening = toggle.classList.toggle('open');
+      folded.forEach((tr) => tr.classList.toggle('visible', opening));
+      toggle.textContent = opening
+        ? '▴ 收起（只看倍率 Top8）'
+        : `▾ 展开其余 ${folded.length} 组方案（按倍率从高到低）`;
+    };
 
     renderDp();
     renderCombo();

@@ -432,13 +432,15 @@
       warns.push(`还差：${short.map((x) => `${x.label} ${E.fmt(Math.round(x.lack))}`).join('、')}
         <span>${state.lockCharge ? '这组充值给的不够，加档位或去掉目标' : '当前渠道凑不齐，考虑换路线或加预算'}</span>`);
     }
-    /* 充值被锁定：说明钱是按你选的那组充的，以及够不够花 */
+    /* 充值被锁定：钱按你选的那组充。若不够，缺的部分是「需要预备的存货」，
+       不是让你再加充值档——工具的定位是「最少花费拿目标」，充值组合已定，
+       差额就是你手上要有的元宝（期初存货），填到左栏即可。 */
     let lockHtml = '';
     if (state.lockCharge && state.lockCharge.length) {
       const over = r.overBudget || 0;
       lockHtml = `<div class="lockbar${over > 1 ? ' bad' : ''}">
         <span>${over > 1
-          ? `充值已锁定，但还差 <b>${E.fmt(Math.round(over))}</b> 元宝才够买这些——再加一档，或去掉一个目标`
+          ? `这组充值到账 ${E.fmt(Math.round(r.charge.spendableYb || r.charge.yb))} 元宝，还差 <b>${E.fmt(Math.round(over))}</b> 元宝——在左栏「期初存货·元宝」填入这笔即可，不用再加充值档`
           : `充值已锁定为这一组，${arrivalText(r.charge)}，可花余额够花`}</span>
         <button class="btn sm ghost" id="unlockCharge">解除锁定</button>
       </div>`;
@@ -800,7 +802,16 @@
   function planLabel(picks) {
     return picks.map((p) => {
       const t = p.tier;
-      const suf = t.tag === '首日' ? '·首' : (/11\/8|第\d天起/.test(t.tag) ? '·后' : '');
+      /* 限定日期档：首日标「·首」，其它限定日标「·M/D」，
+         避免两笔 ¥12（11/21 与 11/22）都叫「¥12首」。 */
+      let suf = '';
+      const day = t.onlyDay || t.fromDay;
+      if (day) {
+        const start = /-(\d{2})$/.exec((P.meta && P.meta.start) || '');
+        const isFirst = start && day === +start[1];
+        const mm = /^\d{4}-(\d{2})-/.exec((P.meta && P.meta.start) || '');
+        suf = isFirst ? '·首' : (mm ? `·${+mm[1]}/${day}` : `·第${day}日`);
+      }
       return `¥${E.fmt(t.rmb)}${suf}${p.n > 1 ? '×' + p.n : ''}`;
     }).join(' + ');
   }
@@ -830,18 +841,34 @@
     }, 0));
 
     let pool = [];
-    try { pool = RATES.bestMix(days, maxBudget, 260, { minShare: 0 }); } catch (e) { pool = []; }
-    [100, 300, 600, 1000, 2000, 4000].forEach((b) => {
-      if (b > maxBudget) return;
+    try { pool = RATES.bestMix(days, maxBudget, 400, { minShare: 0 }); } catch (e) { pool = []; }
+    /* 更密的预算档 + 每档取头部若干组，方案不再只有「6 个固定代表」。
+       档位随本期最大预算自适应生成，换期不会总是同样几个方案。 */
+    const budgetSteps = [30, 60, 100, 150, 200, 300, 450, 600, 900, 1200, 1800, 2600, 4000, 6000];
+    budgetSteps.filter((b) => b <= maxBudget * 1.02).forEach((b) => {
       const cand = pool
-        .filter((x) => x.combo.money <= b * 1.02 && x.combo.money >= b * 0.7)
-        .sort((x, y) => y.e2e.ratio - x.e2e.ratio)[0];
-      if (cand) add('推荐', cand.combo.picks.map((p) => ({ i: p.tier.i, n: p.n })));
+        .filter((x) => x.combo.money <= b * 1.05 && x.combo.money >= b * 0.8)
+        .sort((x, y) => y.e2e.ratio - x.e2e.ratio)
+        .slice(0, 3);
+      cand.forEach((x) => add('推荐', x.combo.picks.map((p) => ({ i: p.tier.i, n: p.n }))));
+    });
+    /* 副产物导向：每个产出副产物的档位单独做「买满这个档」的候选，
+       让「我要纳贤令/宝玉/券」时能直接看到哪种充值档产得多、倍率高。 */
+    RATES.tierList(days).filter((t) => t.cap > 0).forEach((t) => {
+      const src = P.chargeTiers[t.i] || {};
+      const kinds = Object.keys(src.gives || {}).filter((k) => !/绑定元宝|红包/.test(k));
+      if (kinds.length) {
+        const n = Math.min(t.cap, 3);
+        add('产' + kinds.slice(0, 1)[0].replace(/^定向/, ''), [{ i: t.i, n }]);
+      }
     });
     const full = RATES.fullMix(days);
     add('全买满', full.combo.picks.map((p) => ({ i: p.tier.i, n: p.n })));
     RATES.tierList(days).forEach((t) => { if (t.cap > 0) add('单档', [{ i: t.i, n: 1 }]); });
 
+    /* 全部候选按「不拿纳贤」倍率从高到低排序，UI 取前 8 展示、其余折叠。
+       排序在这里做一次，renderRates 直接用。 */
+    out.sort((a, b) => b.bd.ratioNoNaxian - a.bd.ratioNoNaxian);
     planCache = { days, list: out };
     return out;
   }
@@ -855,28 +882,64 @@
     state.rateView = 'table';
     state.comboSel = state.comboSel || {};
     const days = state.ctx.days;
-    const plans = getPlans(days);
+    const plans = getPlans(days).slice();
+    /* 当前锁定的充值组合也放进表里，避免「每日方案要充值¥286，但分析表里
+       找不到这一组」的错位。已在列表里的不重复加，只是把它挪到最前并高亮。 */
+    if (state.lockCharge && state.lockCharge.length) {
+      const lockPicks = state.lockCharge.map((x) => ({ i: x.i, n: x.n }));
+      const sig = lockPicks.map((p) => p.i + 'x' + p.n).sort().join('+');
+      const exist = plans.findIndex((p) => p.picks.map((x) => x.i + 'x' + x.n).sort().join('+') === sig);
+      const c = RATES.combo(lockPicks, days);
+      if (c.cost) {
+        const entry = {
+          tag: '已锁定', c, bd: RATES.breakdown(c, days),
+          label: planLabel(c.picks), picks: c.picks.map((p) => ({ i: p.tier.i, n: p.n })),
+        };
+        if (exist >= 0) plans[exist] = entry; else plans.unshift(entry);
+      }
+    }
     const full = RATES.fullMix(days);
-    const bestOne = plans.slice().sort((a, b) => b.bd.ratioAll - a.bd.ratioAll)[0];
+    const bestOne = plans.slice().sort((a, b) => b.bd.ratioNoNaxian - a.bd.ratioNoNaxian)[0];
 
-    const head = RATES.COLS.map((c) => `<th class="num" title="${c.hint}">${c.name}</th>`).join('');
+    /* 本期无「15选1」玩法时，sel15 列可能是自选福袋折出的「定向招募令」，
+       显示出来用户看不懂（明明没 15选1 却有 15-1 数据）。隐藏该列及两档相关倍率。 */
+    const hasSel15 = !!P.meta.hasSel15;
+    const cols = RATES.COLS.filter((c) => hasSel15 || c.key !== 'sel15');
+
+    const head = cols.map((c) => `<th class="num" title="${c.hint}">${c.name}</th>`).join('');
+
+    /* 按倍率排序后取前 8 展示，其余折叠（DOM 保留，索引与 plans 对齐，
+       保证「选将→」按钮 data-i 不错位）。锁定行始终在前、不受折叠影响。 */
+    const LOCK_FIRST = 8;
+    const lockedIdx = plans.findIndex((p) => p.tag === '已锁定');
+    const shown = new Set();
+    if (lockedIdx >= 0) shown.add(lockedIdx);
+    plans.slice().sort((a, b) => b.bd.ratioNoNaxian - a.bd.ratioNoNaxian)
+      .forEach((p) => {
+        const idx = plans.indexOf(p);
+        if (shown.size < LOCK_FIRST + (lockedIdx >= 0 ? 1 : 0)) shown.add(idx);
+      });
 
     const rows = plans.map((p, i) => {
       const bd = p.bd;
       const ybTotal = bdYbTotal(bd);
       const e2e = RATES.endToEnd(p.c, days);
-      const cells = RATES.COLS.map((c) => {
+      const cells = cols.map((c) => {
         const v = bd.b[c.key];
         return `<td class="num${v > 0 ? '' : ' zero'}">${v > 0 ? E.fmt(Math.round(v)) : '—'}</td>`;
       }).join('');
-      return `<tr>
-        <td class="planname">${p.label}<span class="tagline ${p.tag === '推荐' ? '' : 'gold'}">${p.tag}</span></td>
+      const ratioCols = hasSel15
+        ? `<td class="num ratio">${bd.ratioAll.toFixed(2)}×</td>
+           <td class="num ratio sub2">${bd.ratioNo15.toFixed(2)}×</td>
+           <td class="num ratio sub2">${bd.ratioNoNaxian.toFixed(2)}×</td>`
+        : `<td class="num ratio">${bd.ratioNoNaxian.toFixed(2)}×</td>`;
+      const rowCls = [p.tag === '已锁定' ? 'row-locked' : '', shown.has(i) ? '' : 'fold-row'].filter(Boolean).join(' ');
+      return `<tr${rowCls ? ' class="' + rowCls + '"' : ''}>
+        <td class="planname">${p.label}<span class="tagline ${p.tag === '推荐' ? '' : p.tag === '已锁定' ? 'locked' : 'gold'}">${p.tag}</span></td>
         <td class="num"><b>¥${E.fmt(p.c.money)}</b></td>
         <td class="num"><b>${E.fmt(Math.round(ybTotal))}</b></td>
         ${cells}
-        <td class="num ratio">${bd.ratioAll.toFixed(2)}×</td>
-        <td class="num ratio sub2">${bd.ratioNo15.toFixed(2)}×</td>
-        <td class="num ratio sub2">${bd.ratioNoNaxian.toFixed(2)}×</td>
+        ${ratioCols}
         <td class="num e2e" title="充值返利 + 消费返利都算上">${e2e.ratio.toFixed(2)}×</td>
         <td class="num"><button class="btn sm ghost pickbtn" data-i="${i}">选将 →</button></td>
       </tr>`;
@@ -897,13 +960,15 @@
     /* 本期充值到底返不返「15-1 / 纳贤令」——不返的话三档倍率必然一样，
        与其让用户以为是 bug，不如直接说明白 */
     const noSpecial = plans.every((p) => p.bd.b.sel15 === 0 && p.bd.b.naxian === 0);
-    const hintText = noSpecial
-      ? '本期充值不返 15-1 / 纳贤令，三档倍率一致；换个有纳贤返利的期就会分开'
-      : '倍率高 ≠ 一定值：要看这些产出对不对得上你要的武将';
+    const hintText = !hasSel15
+      ? '本期没有「15选1」玩法，已隐藏相关列；倍率只按「不拿纳贤」与「含消费」两档看'
+      : noSpecial
+        ? '本期充值不返 15-1 / 纳贤令，三档倍率一致；换个有纳贤返利的期就会分开'
+        : '倍率高 ≠ 一定值：要看这些产出对不对得上你要的武将';
 
     $('#rateBody').innerHTML = `
       <div class="rate-kpis">
-        <div class="kpi"><span>最优单档</span><b>${bestOne ? `¥${E.fmt(bestOne.c.money)} · ${bestOne.bd.ratioAll.toFixed(2)}×` : '—'}</b></div>
+        <div class="kpi"><span>最优单档</span><b>${bestOne ? `¥${E.fmt(bestOne.c.money)} · ${(hasSel15 ? bestOne.bd.ratioAll : bestOne.bd.ratioNoNaxian).toFixed(2)}×` : '—'}</b></div>
         <div class="kpi"><span>全买满</span><b>¥${E.fmt(full.combo.money)} · ${full.e2e.ratio.toFixed(2)}×</b></div>
         <div class="kpi"><span>方案</span><b>${plans.length} 组</b></div>
         <div class="kpi hint">${hintText}</div>
@@ -914,8 +979,8 @@
           <tr>
             <th>充值方案</th><th class="num">金额</th><th class="num" title="能直接花的元宝">总元宝</th>
             ${head}
-            <th class="num" title="产出全部算数">拿15-1</th>
-            <th class="num" title="目标不在 15 选 1 名单里">拿非15-1</th>
+            ${hasSel15 ? `<th class="num" title="产出全部算数">拿15-1</th>
+            <th class="num" title="目标不在 15 选 1 名单里">拿非15-1</th>` : ''}
             <th class="num" title="根本不练纳贤将">不拿纳贤</th>
             <th class="num" title="充值返利 + 消费返利都算上">含消费</th>
             <th></th>
@@ -923,9 +988,12 @@
         </thead>
         <tbody>${rows}</tbody>
       </table>
+      ${plans.length > LOCK_FIRST ? `<div class="plans-toggle" id="plansToggle">▾ 展开其余 ${plans.length - shown.size} 组方案（按倍率从高到低）</div>` : ''}
       <div class="rate-foot">
         ${RATES.notes().map((n) => `<div>· ${n}</div>`).join('')}
-        <div>· 三档倍率只差在「产出算不算数」：<b>拿 15-1</b> 全算；<b>拿非 15-1</b> 扣掉 15-1 类产出；<b>不拿纳贤</b> 连纳贤令也不算。</div>
+        ${hasSel15
+          ? '<div>· 三档倍率只差在「产出算不算数」：<b>拿 15-1</b> 全算；<b>拿非 15-1</b> 扣掉 15-1 类产出；<b>不拿纳贤</b> 连纳贤令也不算。</div>'
+          : '<div>· 本期无「15选1」玩法：<b>不拿纳贤</b>=产出不算纳贤令的保守倍率，<b>含消费</b>额外算上每日消费返利。自选福袋折出的定向产出已计入「其他」列。</div>'}
       </div>
 
       <div class="rate-sec">
@@ -977,6 +1045,16 @@
     $('#rateBody').querySelectorAll('.pickbtn').forEach((el) => {
       el.onclick = () => openPicker(plans[+el.dataset.i]);
     });
+    const toggle = $('#plansToggle');
+    if (toggle) toggle.onclick = () => {
+      const body = toggle.closest('.rate-sec').querySelector('.ana-table tbody');
+      const folded = body.querySelectorAll('tr.fold-row');
+      const opening = toggle.classList.toggle('open');
+      folded.forEach((tr) => tr.classList.toggle('visible', opening));
+      toggle.textContent = opening
+        ? '▴ 收起（只看倍率 Top8）'
+        : `▾ 展开其余 ${folded.length} 组方案（按倍率从高到低）`;
+    };
 
     renderDp();
     renderCombo();

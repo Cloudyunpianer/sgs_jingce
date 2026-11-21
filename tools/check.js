@@ -792,9 +792,12 @@ console.log('\n--- 断言 7：锁定充值收敛 ---');
       (P.chargeTiers[t128.i].gives || {})['定向招募令'] === 10,
       `¥128 gives=${JSON.stringify(P.chargeTiers[t128.i].gives)}`);
     const bd128 = R.breakdown(R.combo([{ i: t128.i, n: 1 }], days), days);
+    /* 本期无「15选1」玩法（hasSel15=false），福袋折出的定向招募令归到 other 列，
+       不再显示在 15-1；有 15选1 的期仍归 sel15。两种口径下福袋价值都必须进倍率。 */
+    const bagCol = P.meta.hasSel15 ? bd128.b.sel15 : bd128.b.other;
     ok('¥128 倍率含福袋价值（不再恒定 2.0×）',
-      bd128.b.sel15 === 10000 && bd128.ratioAll > 2.6,
-      `15-1=${money(bd128.b.sel15)} 倍率=${bd128.ratioAll.toFixed(2)}×`);
+      bagCol >= 10000 && bd128.ratioAll > 2.6,
+      `${P.meta.hasSel15 ? '15-1' : '其他'}=${money(bagCol)} 倍率=${bd128.ratioAll.toFixed(2)}×`);
     ok('福袋折算只作用于充值档，不污染消费档',
       !P.dailyTiers.some((t) => Object.keys(t.gives || {}).some((k) => /定向/.test(k))),
       '消费档的定向福袋保留 only 口径，不折成通用令回冲');
@@ -974,6 +977,28 @@ console.log('\n--- 断言 7：锁定充值收敛 ---');
   ok('网页innerText：无#标题兜底取到日期标题',
     !!(wm.meta && /11\.28-12\.5/.test(wm.meta.title || '')),
     `title=${wm.meta && wm.meta.title}`);
+}
+
+/* ---------- 充值分析表展示口径（小雪期用户反馈）---------- */
+{
+  const PARSER = global.window.PARSER;
+  /* 两个 ¥12 档：11/21 与 11/22，标签必须一个是「首日」一个是「11/22」，不能都叫「首日」。 */
+  const md = fs.readFileSync(path.join(root, 'samples/20261121_xiaoxue.md'), 'utf8');
+  const parsed = PARSER.parse(md);
+  PARSER.apply(parsed.model);
+  const d12 = R.tierList(P.meta.days).filter((t) => t.need === 1200);
+  eqs('小雪期两个¥12档标签不重复', d12.map((t) => t.tag).sort().join('|'), '11/22|首日');
+  ok('小雪期无15选1（hasSel15=false）', P.meta.hasSel15 === false,
+    `hasSel15=${P.meta.hasSel15}`);
+  /* 本期无 15选1 时，福袋折出的定向招募令归 other 列，不再出现在 sel15。 */
+  const bd = R.breakdown(R.fullMix(P.meta.days).combo, P.meta.days);
+  ok('无15选1期：定向产出归其他列、sel15为空',
+    bd.b.sel15 === 0 && bd.b.other > 0 && Math.abs(bd.ratioAll - bd.ratioNo15) < 1e-9,
+    `sel15=${Math.round(bd.b.sel15)} other=${Math.round(bd.b.other)}`);
+  /* 方案池要够多（副产物驱动 + 多预算档），不能只有固定几个 */
+  let pool = [];
+  try { pool = R.bestMix(P.meta.days, 9000, 400, { minShare: 0 }); } catch (e) { pool = []; }
+  ok('充值方案候选池足够大（非固定几组）', pool.length >= 40, `候选 ${pool.length} 组`);
 }
 
 console.log(fail ? `\n${fail} 项不通过` : '\n全部通过');
