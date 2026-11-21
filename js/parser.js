@@ -24,6 +24,39 @@ window.PARSER = (function () {
   const isTY = (s) => /通用元宝/.test(String(s || ''));
   const clean = (s) => String(s || '').replace(/[*_`]/g, '').replace(/[。，,、\s]+$/, '').trim();
 
+  /* 网页 innerText 里的表格是 tab 分隔、且没有 markdown 的 |---|---| 分隔行，
+     而 tables()/cells() 只认管道表格。若直接喂网页文本，所有表格型板块
+     （如意/锦绣/宝玉商店、商城商品、草船兑换、签筒、礼包产出…）会全部解析失败，
+     目标因此没有购买路线 → 界面全显示「未满足确定途径」、无法报价。
+     这里把「连续 ≥2 行的 tab 行块」转成 markdown 管道表格（补上分隔行）；
+     单行 tab 行是「武将技能\t【才韵】」这类键值对，非表格，原样保留。
+     对本来就是 markdown 的文本完全不动（幂等）。 */
+  function normalizeTabTables(ls) {
+    const out = [];
+    let i = 0;
+    const toPipe = (line) => '| ' + line.split('\t').map((c) => c.trim()).join(' | ') + ' |';
+    while (i < ls.length) {
+      /* 网页章节标题「四、草船借箭」缺 markdown 的 ## 前缀，
+         sections() 只认 ## → 章节定位（草船/充值/消费 secLines）全失效。
+         中文数字序号 + 顿号开头的短行补上 ## （markdown 原文已带 ## 则幂等）。 */
+      if (/^[一二三四五六七八九十]+、[^\t]{2,30}$/.test(ls[i].trim())) {
+        out.push('## ' + ls[i].trim());
+        i++;
+        continue;
+      }
+      if (ls[i].indexOf('\t') < 0) { out.push(ls[i]); i++; continue; }
+      const start = i;
+      while (i < ls.length && ls[i].indexOf('\t') >= 0) i++;
+      const block = ls.slice(start, i);
+      if (block.length < 2) { out.push.apply(out, block); continue; }
+      const ncol = block[0].split('\t').length;
+      out.push(toPipe(block[0]));
+      out.push('| ' + Array(ncol).join('--- | ') + '--- |');
+      for (let k = 1; k < block.length; k++) out.push(toPipe(block[k]));
+    }
+    return out;
+  }
+
   function tables(ls) {
     const out = [];
     for (let i = 0; i < ls.length - 1; i++) {
@@ -197,7 +230,7 @@ window.PARSER = (function () {
      解析
      ============================================================ */
   function parse(text) {
-    const ls = lines(text);
+    const ls = normalizeTabTables(lines(text));
     const rep = [];
     const miss = [];
     const model = {

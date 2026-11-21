@@ -941,5 +941,40 @@ console.log('\n--- 断言 7：锁定充值收敛 ---');
   }
 }
 
+/* ---------- 网页 innerText 兼容（一键导入真实路径）----------
+   从公告网页 copy 的正文：表格是 tab 分隔、章节标题「四、草船借箭」无 ## 前缀。
+   parser 入口 normalizeTabTables 把它们补成管道表格 + ## 标题；否则商店/草船等
+   表格型板块全解析不出来 → 目标无购买路线 → 界面全「未满足确定途径」。 */
+{
+  const PARSER = global.window.PARSER;
+  const webText = [
+    '11.28-12.5 网页innerText测试活动 换期标题识别',
+    '一、草船借箭',
+    '每日任务（每日重置）\t获得草人',
+    '累计充值5000元宝\t10',
+    '',
+    '数量\t概率',
+    '80\t20.00%',
+    '100\t20.00%',
+    '',
+    '道具名\t消耗箭矢\t限制兑换次数',
+    '孙和\t12000\t1',
+    '二、传世宝玉',
+    '道具名\t消耗宝玉\t可兑换次数',
+    '传世宝玉\t500\t5',
+  ].join('\n');
+  const wp = PARSER.parse(webText);
+  const wm = wp.model || wp;
+  ok('网页innerText：tab表格转成商店数据',
+    !!(wm.shops && wm.shops.jade && wm.shops.jade.length > 0),
+    `jade商店 ${wm.shops && wm.shops.jade ? wm.shops.jade.length : 0} 项`);
+  ok('网页innerText：无##章节标题被识别（草船概率表）',
+    !!(wm.ccbj && wm.ccbj.arrow && wm.ccbj.arrow.prob.length > 0),
+    `箭矢概率档 ${wm.ccbj && wm.ccbj.arrow ? wm.ccbj.arrow.prob.length : 0}`);
+  ok('网页innerText：无#标题兜底取到日期标题',
+    !!(wm.meta && /11\.28-12\.5/.test(wm.meta.title || '')),
+    `title=${wm.meta && wm.meta.title}`);
+}
+
 console.log(fail ? `\n${fail} 项不通过` : '\n全部通过');
 process.exit(fail ? 1 : 0);

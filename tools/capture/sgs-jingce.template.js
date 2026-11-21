@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         吾亦能善算谋划
 // @namespace    https://github.com/Cloudyunpianer/sgs_jingce
-// @version      2.3.0
+// @version      2.3.1
 // @description  在三国杀官网/网页版游戏页内嵌完整精测程序，抓包+扫页面双通道找公告，一键导入本期活动并精测。配套 sgs_jingce。
 // @author       sgs_jingce
 // @match        *://x.sanguosha.com/*
