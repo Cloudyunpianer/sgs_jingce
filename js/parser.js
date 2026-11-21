@@ -235,8 +235,21 @@ window.PARSER = (function () {
     /* 所有命中章节合并（同一期可能出现「消费排行榜」+「消费活动」两段） */
     const secText = (re) => secs.filter((s) => re.test(s.title)).map((s) => ls.slice(s.idx, s.end).join('\n')).join('\n');
 
-    /* ---------- 标题 / 日期 ---------- */
-    const title = (ls.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
+    /* ---------- 标题 / 日期 ----------
+       官网公告 md 用 "# 标题"；但油猴从网页 copy 的 innerText 没有 # 前缀，
+       标题行形如「11.21-11.28 小雪活动 新将…活动上线」。以前只认 # 行，
+       导致网页文本导入后 meta.title 为空、apply 时保留上一期标题，界面显示
+       「日期已更新成小雪、标题还是双十一」的错位。这里加两级兜底：
+       ① # 行；② 含 M.D-M.D 日期范围且较长的行（网页文本标题特征）。 */
+    let title = (ls.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
+    if (!title) {
+      const tline = ls.find((l) => {
+        const s = l.trim();
+        if (s.length < 12 || /^活动时间|^官网首页|^返回|^当前位置|^资讯详情|^游戏公告/.test(s)) return false;
+        return /\d{1,2}[.\-]\d{1,2}\s*[-~至]\s*\d{1,2}[.\-]\d{1,2}/.test(s) && /[^0-9.\-~\s]/.test(s);
+      });
+      if (tline) title = tline.trim();
+    }
     if (title) model.meta.title = title;
     const dm = /(\d{4}-\d{2}-\d{2})[^\n]*?~\s*(\d{4}-\d{2}-\d{2})/.exec(text);
     if (dm) { model.meta.start = dm[1]; model.meta.end = dm[2]; }

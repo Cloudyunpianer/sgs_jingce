@@ -392,6 +392,22 @@ const md = [
   '| 测试皮肤 | 0.5% |',
 ].join('\n');
 
+/* 网页版公告页复制的 innerText 没有 "# " 前缀，标题行形如
+   "11.21-11.28 小雪活动…"。以前只认 # 行导致标题解析为空、apply 时
+   保留上一期标题（日期更新了标题却没换）。这里守一条兜底断言。 */
+const NO_HASH_TEXT = [
+  '官网首页',
+  '游戏公告',
+  '11.21-11.28 小雪活动 新将陆文漪孙和 草船借箭活动上线',
+  '',
+  '活动时间：2026-11-21 00:00:00 ~ 2026-11-28 23:59:59',
+  '单笔充值6000元宝，可领取奖励：纳贤令*6，每日限完成1次。',
+  '累计纳贤陆文漪*120，可领取奖励：陆文漪，限完成1次。',
+].join('\n');
+const NH = window.PARSER.parse(NO_HASH_TEXT).model.meta;
+ok('无#标题行兜底解析', /小雪活动/.test(NH.title || ''), '标题=' + (NH.title || '(空)'));
+eqs('无#标题文本日期', NH.start, '2026-11-21');
+
 const PARSED = window.PARSER.parse(md);
 const PM = PARSED.model;
 const box = (PM.systems || []).filter((s) => s.kind === 'box');
